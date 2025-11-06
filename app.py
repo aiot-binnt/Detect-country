@@ -1,11 +1,11 @@
-# File: app.py (Flask main app with new response format - Multiple countries list + time)
+# File: app.py (Flask main app with new response format - evidence + nested country)
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import os
 import time
 from dotenv import load_dotenv
-from utils.validator import validate_countries  # Updated import
-from utils.openai_detector import OpenAIDetector  
+from utils.validator import validate_countries
+from utils.openai_detector import OpenAIDetector
 
 # Logging setup
 import logging
@@ -60,7 +60,7 @@ def health_check():
         result = {
             "status": "healthy",
             "service": "AI Country Detector",
-            "version": "1.1.0"  # Updated version
+            "version": "1.2.0"  # Updated version for new structure
         }
         processing_time = int((time.time() - start_time) * 1000)
         logger.info(f"Health check completed in {processing_time}ms")
@@ -75,7 +75,7 @@ def health_check():
 @REQUEST_LATENCY.time()  # Measure latency
 def detect_country():
     """
-    Detect countries from product description (multiple support)
+    Detect countries and attributes from product description
     Request body: {"description": "text"}
     Response format: {result: "OK"|"Failed", data: {...}, errors?: [...]}
     """
@@ -123,32 +123,42 @@ def detect_country():
             processing_time = 0  # Cache instant
             logger.info(f"Cache hit for text: {text[:50]}...")
             REQUEST_COUNT.labels(endpoint='detect-country', status='success').inc()
+            
             success_response = {
                 "result": "OK",
                 "data": {
-                    "country": cached_result['country'],  # List
+                    # NEW STRUCTURE: Read from cache
                     "confidence": cached_result['confidence'],
                     "attributes": cached_result['attributes'],
                     "cache": True,
-                    "time": processing_time  # ← NEW: Time in ms
+                    "time": processing_time
                 }
             }
             return jsonify(success_response)
         
-        # Step 1: Call AI (no regex fallback)
+        # Step 1: Call AI
         logger.info(f"Calling AI for: {text[:100]}...")
         if not openai_detector:
             raise ValueError("OpenAI Detector not initialized")
+            
+        # AI result now contains {"confidence": ..., "attributes": {...}}
         ai_result = openai_detector.detect_country(text)
         logger.info(f"AI result: {ai_result}")
         
         # Validate and prepare result
-        country = validate_countries(ai_result['country'])  # List
         confidence = ai_result['confidence']
         attributes = ai_result['attributes']
         
+        # Extract country value list for validation
+        country_value_list = attributes.get('country', {}).get('value', ["ZZ"])
+        
+        # Validate the list of country codes
+        valid_country_list = validate_countries(country_value_list)
+        
+        # Update the attributes dict with the validated list
+        attributes['country']['value'] = valid_country_list
+        
         result_data = {
-            "country": country,
             "confidence": confidence,
             "attributes": attributes,
             "cache": False,
@@ -156,13 +166,17 @@ def detect_country():
         }
         
         # Cache if any valid country (not all ZZ) and confidence > 0.5
-        if any(c != "ZZ" for c in country) and confidence > 0.5:
-            cache_entry = result_data.copy()
-            cache_entry['source'] = "AI"  # For internal use
+        if any(c != "ZZ" for c in valid_country_list) and confidence > 0.5:
+            # NEW STRUCTURE: Cache entry
+            cache_entry = {
+                "confidence": confidence,
+                "attributes": attributes,
+                "source": "AI"  # For internal use
+            }
             if len(cache) >= MAX_CACHE_SIZE:
                 cache.popitem(last=False)  # LRU evict oldest
             cache[text] = cache_entry
-            logger.info(f"Successful detection: {country} (conf: {confidence:.2f}) for {text[:50]}...")
+            logger.info(f"Successful detection: {valid_country_list} (conf: {confidence:.2f}) for {text[:50]}...")
         else:
             logger.warning(f"Detection failed (ZZ) for: {text[:50]}...")
         
@@ -196,7 +210,7 @@ def detect_country():
 @REQUEST_LATENCY.time()  # Measure latency
 def batch_detect():
     """
-    Batch detection for multiple descriptions (multiple countries support)
+    Batch detection for multiple descriptions
     Request body: {"descriptions": ["text1", "text2", ...]}
     Response format: {result: "OK"|"Failed", data: {results: [...], total: N}, errors?: [...]}
     """
@@ -226,33 +240,36 @@ def batch_detect():
         ai_calls = 0
         for desc in descriptions:
             text = desc.strip()
-            from_cache = False
             
             # Check cache first
             if text in cache:
                 cached = cache[text].copy()
+                # NEW STRUCTURE: Append cached result
                 results.append({
-                    "country": cached['country'],  # List
                     "confidence": cached['confidence'],
                     "attributes": cached['attributes'],
                     "cache": True
                 })
                 cache_hits += 1
-                from_cache = True
                 continue
             
-            # AI detection (no regex)
+            # AI detection
             ai_calls += 1
             logger.info(f"Batch AI call {ai_calls} for: {text[:50]}...")
             if not openai_detector:
                 raise ValueError("OpenAI Detector not initialized")
+                
             ai_result = openai_detector.detect_country(text)
-            country = validate_countries(ai_result['country'])  # List
+            
             confidence = ai_result['confidence']
             attributes = ai_result['attributes']
             
+            # Validate countries
+            country_value_list = attributes.get('country', {}).get('value', ["ZZ"])
+            valid_country_list = validate_countries(country_value_list)
+            attributes['country']['value'] = valid_country_list
+            
             result_item = {
-                "country": country,
                 "confidence": confidence,
                 "attributes": attributes,
                 "cache": False
@@ -260,13 +277,17 @@ def batch_detect():
             results.append(result_item)
             
             # Cache if any valid
-            if any(c != "ZZ" for c in country) and confidence > 0.5:
-                cache_entry = result_item.copy()
-                cache_entry['source'] = "AI"
+            if any(c != "ZZ" for c in valid_country_list) and confidence > 0.5:
+                # NEW STRUCTURE: Cache entry
+                cache_entry = {
+                    "confidence": confidence,
+                    "attributes": attributes,
+                    "source": "AI"
+                }
                 if len(cache) >= MAX_CACHE_SIZE:
                     cache.popitem(last=False)
                 cache[text] = cache_entry
-                logger.info(f"Batch success: {country} for {text[:50]}...")
+                logger.info(f"Batch success: {valid_country_list} for {text[:50]}...")
             else:
                 logger.warning(f"Batch failed (ZZ) for: {text[:50]}...")
         
@@ -279,7 +300,7 @@ def batch_detect():
                 "total": len(results),
                 "cache_hits": cache_hits,
                 "ai_calls": ai_calls,
-                "time": processing_time  # ← NEW: Total batch time in ms
+                "time": processing_time
             }
         }
         logger.info(f"Batch completed: {len(results)} items, {cache_hits} cache hits, {ai_calls} AI calls in {processing_time}ms")
