@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Country Detector Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        h1,
+        h2 {
+            color: #333;
+        }
+        .section {
+            background: white;
+            margin: 20px 0;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 5px 0 0;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .error {
+            color: #dc3545;
+            border-left: 4px solid #dc3545;
+        }
+        .success {
+            color: #28a745;
+            border-left: 4px solid #28a745;
+        }
+        #baseUrlInput {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 300px;
+        }
+        .batch-results {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .item-result {
+            border: 1px solid #ddd;
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Country Detector Tester</h1>
+    <p>Enter the base URL of your Flask server (default: http://localhost:5000):</p>
+    <input type="text" id="baseUrlInput" value="http://localhost:5000" placeholder="e.g., http://localhost:5000">
+    <button type="button" id="healthBtn" onclick="testHealth(event)">Test Connection</button>
+    <div id="healthResult" class="result"></div>
+    <div class="section">
+        <h2>Single Detection (/detect-country)</h2>
+        <p>Enter product description:</p>
+        <textarea id="singleInput" placeholder="e.g., 日本製、サイズM、レッドコットンNikeシャツ">日本製、サイズM、レッドコットンNikeシャツ</textarea>
+        <br>
+        <button type="button" id="singleBtn" onclick="detectSingle(event)">Detect Country</button>
+        <div id="singleResult" class="result"></div>
+    </div>
+    <div class="section">
+        <h2>Batch Detection (/batch-detect)</h2>
+        <p>Enter descriptions (one per line):</p>
+        <textarea id="batchInput" placeholder="e.g., Line 1: 中国制造...&#10;Line 2: Made in Vietnam...">中国制造、黒プラスチック北京工場
+ベトナム生産、青Samsung電話</textarea>
+        <br>
+        <button type="button" id="batchBtn" onclick="detectBatch(event)">Batch Detect</button>
+        <div id="batchResult" class="result batch-results"></div>
+    </div>
+    <script>
+        const BASE_URL_KEY = 'baseUrl';
+        let baseUrl = localStorage.getItem(BASE_URL_KEY) || 'http://localhost:5000';
+
+        function updateBaseUrl() {
+            const input = document.getElementById('baseUrlInput');
+            let url = input.value.trim();
+            if (url && !url.endsWith('/')) {
+                url += '/';
+            }
+            baseUrl = url;
+            localStorage.setItem(BASE_URL_KEY, baseUrl);
+            // Do not overwrite input.value - let user see what they typed
+        }
+
+        function showResult(elementId, data, isError = false) {
+            const el = document.getElementById(elementId);
+            if (isError) {
+                el.className = 'result error';
+                el.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            } else {
+                el.className = 'result success';
+                el.innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            }
+        }
+
+        async function fetchApi(fullUrl, options) {
+            try {
+                console.log('Fetching URL:', fullUrl);
+                console.log('Options body preview:', options.body ? options.body.substring(0, 100) + '...' : 'No body');
+                const response = await fetch(fullUrl, options);
+                console.log('Response status:', response.status);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Error response body:', errorText);
+                    throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+                }
+                const data = await response.json();
+                console.log('Response data preview:', JSON.stringify(data).substring(0, 200));
+                return data;
+            } catch (error) {
+                console.error('Full fetch error:', error);
+                throw new Error(`Fetch error: ${error.message}`);
+            }
+        }
+
+        async function testHealth(event) {
+            if (event) event.preventDefault();
+            const btn = document.getElementById('healthBtn');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.textContent = 'Testing...';
+            try {
+                updateBaseUrl();
+                const resultEl = document.getElementById('healthResult');
+                resultEl.className = 'result';
+                resultEl.textContent = 'Testing...';
+                const data = await fetchApi(baseUrl + 'health', { method: 'GET' });
+                showResult('healthResult', data);
+            } catch (error) {
+                showResult('healthResult', { error: error.message }, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Connection';
+            }
+        }
+
+        async function detectSingle(event) {
+            if (event) event.preventDefault();
+            const btn = document.getElementById('singleBtn');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.textContent = 'Detecting...';
+            try {
+                updateBaseUrl();
+                const inputEl = document.getElementById('singleInput');
+                const input = inputEl.value.trim();
+                console.log('Single input length:', input.length, 'Preview:', input.substring(0, 50));
+                if (!input) {
+                    alert('Please enter a description');
+                    return;
+                }
+                const resultEl = document.getElementById('singleResult');
+                resultEl.className = 'result';
+                resultEl.textContent = 'Detecting...';
+                const fullUrl = baseUrl + 'detect-country';
+                const data = await fetchApi(fullUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: input })
+                });
+                console.log('Single data received:', data);
+                if (data.result !== 'OK') {
+                    throw new Error(JSON.stringify(data.errors || [{ message: 'Unknown server error' }]));
+                }
+                showResult('singleResult', data.data || data);
+            } catch (error) {
+                console.error('Single detect error:', error);
+                showResult('singleResult', { error: error.message }, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Detect Country';
+            }
+        }
+
+        async function detectBatch(event) {
+            if (event) event.preventDefault();
+            const btn = document.getElementById('batchBtn');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.textContent = 'Batch Detecting...';
+            try {
+                updateBaseUrl();
+                const inputEl = document.getElementById('batchInput');
+                const input = inputEl.value.trim();
+                console.log('Batch input length:', input.length, 'Preview:', input.substring(0, 50));
+                if (!input) {
+                    alert('Please enter descriptions');
+                    return;
+                }
+                let descriptions = input.split(/\r?\n/).map(line => line.trim()).filter(line => line);
+                console.log('Batch descriptions count:', descriptions.length, 'Preview:', descriptions.map(d => d.substring(0, 20)));
+                if (descriptions.length === 0) {
+                    alert('No valid descriptions found');
+                    return;
+                }
+                const resultEl = document.getElementById('batchResult');
+                resultEl.innerHTML = '<div class="result">Batch detecting...</div>';
+                const fullUrl = baseUrl + 'batch-detect';
+                const data = await fetchApi(fullUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ descriptions })
+                });
+                console.log('Batch data received:', data);
+                if (data.result !== 'OK') {
+                    throw new Error(JSON.stringify(data.errors || [{ message: 'Unknown server error' }]));
+                }
+                const resultsHtml = data.data.results.map((item, index) => `
+                    <div class="item-result">
+                        <strong>Item ${index + 1}:</strong><br>
+                        <pre>${JSON.stringify(item, null, 2)}</pre>
+                    </div>
+                `).join('');
+                resultEl.innerHTML = `
+                    <div class="result success">
+                        <strong>Summary:</strong> Total: ${data.data.total}, Cache Hits: ${data.data.cache_hits}, AI Calls: ${data.data.ai_calls}, Time: ${data.data.time}ms<br><br>
+                        ${resultsHtml}
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Batch detect error:', error);
+                const resultEl = document.getElementById('batchResult');
+                resultEl.innerHTML = `
+                    <div class="result error">
+                        <pre>${JSON.stringify({ error: error.message }, null, 2)}</pre>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Batch Detect';
+            }
+        }
+
+        // Load base URL on init
+        document.getElementById('baseUrlInput').value = baseUrl;
+        updateBaseUrl(); // Ensure trailing slash on init
+        document.getElementById('baseUrlInput').addEventListener('change', updateBaseUrl);
+    </script>
+</body>
+</html>
