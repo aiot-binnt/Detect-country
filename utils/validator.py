@@ -1,8 +1,8 @@
-# File: utils/validator.py
 import re
-from typing import List  # ← FIX: Thêm import này
+from typing import List
+from collections import OrderedDict
 
-# Valid ISO 3166-1 alpha-2 country codes (most common) - Added ID for Indonesia
+
 VALID_COUNTRY_CODES = {
     # Asia
     "JP", "CN", "KR", "VN", "TH", "TW", "HK", "SG", "MY", "ID", "PH", "IN",
@@ -36,19 +36,15 @@ def validate_country_code(code: str) -> str:
     if not code:
         return "ZZ"
     
-    # Clean and normalize
     code = code.strip().upper()
     code = re.sub(r'[^A-Z]', '', code)
     
-    # Special case for ZZ
     if code == "ZZ":
         return "ZZ"
     
-    # Must be exactly 2 letters
     if len(code) != 2:
         return "ZZ"
     
-    # Check if valid ISO code
     if code not in VALID_COUNTRY_CODES:
         return "ZZ"
     
@@ -71,7 +67,8 @@ def validate_countries(codes: List[str]) -> List[str]:
     if not validated:
         return ["ZZ"]
     
-    return validated
+
+    return list(OrderedDict.fromkeys(validated))
 
 def is_valid_country_code(code: str) -> bool:
     """Check if single country code is valid (excluding ZZ)"""
