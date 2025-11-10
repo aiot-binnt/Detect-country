@@ -25,7 +25,7 @@ class OpenAIDetector:
         text = re.sub(r'<th[^>]*>.*?</th>', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<td[^>]*>.*?</td>', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<table[^>]*>.*?</table>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'[^a-zA-Z0-9\u3040-\u30ff\u4e00-\u9fff.,;:/\-\(\)\[\]％™\s]', '', text)
+        text = re.sub(r'[^a-zA-Z0-9\u3040-\u30ff\u4e00-\u9fff.,;:/\-\(\)\[\]（）％™\s]', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
         print(f"[DEBUG] Cleaned text length: {len(text)} chars")
         return text
@@ -87,8 +87,11 @@ class OpenAIDetector:
     * 例: "China" (中国) -> `["CN"]`
 
 【Other Attributes ルール】:
-* `size`, `color`, `material`, `brand` ルール (変更なし...)
-* 見つからない場合は `{"value": "none", "evidence": "none", "confidence": 0.0}`。
+1.  `size`, `material`, `brand`: (変更なし)
+2.  **`color` (色) ルール (重要):**
+    * `value`には、原文で見つかった**正確な**色の記述（例: "Glacier Grey/Pure Silver", "ブルー系（青・紺・ネイビー）"）をそのまま抽出してください。
+    * **翻訳や単純化（例: 「ネイビー」を「blue」に変える）は絶対に行わないでください。** 見つかった文字列全体を `value` として返します。
+3.  見つからない場合は `{"value": "none", "evidence": "none", "confidence": 0.0}`。
 
 【例】:
 - "日本製、サイズM、レッドコットンNikeシャツ" →
