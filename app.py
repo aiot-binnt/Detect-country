@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import os
@@ -7,6 +6,7 @@ from dotenv import load_dotenv
 from utils.validator import validate_countries
 from utils.openai_detector import OpenAIDetector
 import asyncio 
+from functools import wraps # <-- THÊM IMPORT NÀY
 
 
 import logging
@@ -28,6 +28,41 @@ REQUEST_LATENCY = Histogram('api_request_duration_seconds', 'API request latency
 
 load_dotenv()
 
+# --- START API KEY SETUP ---
+# Lấy danh sách các key hợp lệ từ file .env
+# Chúng ta dùng set (tập hợp) để tra cứu O(1) (rất nhanh)
+VALID_API_KEYS = {key.strip() for key in os.getenv('API_KEYS', '').split(',') if key.strip()}
+
+if not VALID_API_KEYS:
+    logger.warning("!!! API_KEYS environment variable is not set or is empty. API is unprotected. !!!")
+
+def require_api_key(f):
+    """Decorator để yêu cầu API key hợp lệ trong header X-API-KEY"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Bỏ qua kiểm tra nếu không có key nào được cấu hình (để dễ test local)
+        if not VALID_API_KEYS:
+            return f(*args, **kwargs)
+        
+        received_key = request.headers.get('X-API-KEY')
+        
+        if not received_key or received_key not in VALID_API_KEYS:
+            logger.warning(f"Failed auth attempt. Missing or invalid API Key. IP: {request.remote_addr}")
+            # Ghi nhận lỗi vào Prometheus
+            REQUEST_COUNT.labels(endpoint='auth', status='error').inc()
+            
+            error_response = {
+                "result": "Failed", 
+                "errors": [{"code": "AUTH_ERROR", "message": "Invalid or missing 'X-API-KEY' header"}]
+            }
+            return jsonify(error_response), 401 # 401 Unauthorized
+        
+        # Nếu key hợp lệ, tiếp tục chạy hàm gốc
+        return f(*args, **kwargs)
+    return decorated_function
+# --- END API KEY SETUP ---
+
+
 app = Flask(__name__)
 CORS(app)
 
@@ -47,6 +82,7 @@ cache = OrderedDict()
 @app.route('/health', methods=['GET'])
 @REQUEST_LATENCY.time()
 def health_check():
+    """Endpoint không cần bảo vệ để kiểm tra tình trạng service"""
     try:
         start_time = time.time()
         result = {
@@ -65,6 +101,7 @@ def health_check():
 
 
 @app.route('/detect-country', methods=['POST'])
+@require_api_key  # <-- ÁP DỤNG DECORATOR BẢO VỆ
 @REQUEST_LATENCY.time()
 def detect_country():
     """
@@ -111,11 +148,9 @@ def detect_country():
         if not openai_detector:
             raise ValueError("OpenAI Detector not initialized")
             
-
         ai_result = asyncio.run(openai_detector.detect_country(text))
         logger.info(f"AI result: {ai_result}")
         
-
         if 'attributes' not in ai_result:
             logger.error(f"AI result missing 'attributes' key: {ai_result}")
             attributes = openai_detector._fallback_result()['attributes']
@@ -163,6 +198,7 @@ def detect_country():
 
 
 @app.route('/batch-detect', methods=['POST'])
+@require_api_key  # <-- ÁP DỤNG DECORATOR BẢO VỆ
 @REQUEST_LATENCY.time()
 def batch_detect():
     """
@@ -182,14 +218,12 @@ def batch_detect():
             error_response = {"result": "Failed", "errors": [{"code": "VALIDATION_ERROR", "message": "Invalid 'descriptions' field"}]}
             return jsonify(error_response), 400
         
-
         async def _process_batch():
             results_dict = {}
             tasks_to_run = []
             texts_to_fetch = []
             cache_hits = 0
             ai_calls = 0
-
 
             for i, desc in enumerate(descriptions):
                 text = desc.strip()
@@ -203,15 +237,13 @@ def batch_detect():
                         texts_to_fetch.append((i, text))
                         ai_calls += 1
                     else:
-                         results_dict[i] = {"attributes": openai_detector._fallback_result()['attributes'], "cache": False}
+                        results_dict[i] = {"attributes": openai_detector._fallback_result()['attributes'], "cache": False}
             
-
             if tasks_to_run:
                 logger.info(f"Running {len(tasks_to_run)} AI calls concurrently...")
                 ai_results = await asyncio.gather(*tasks_to_run)
                 logger.info("Concurrent AI calls finished.")
                 
-
                 for (i, text), ai_result in zip(texts_to_fetch, ai_results):
                     if 'attributes' not in ai_result:
                         attributes = openai_detector._fallback_result()['attributes']
@@ -270,6 +302,7 @@ def batch_detect():
 
 @app.route('/metrics', methods=['GET'])
 def metrics():
+    """Endpoint không cần bảo vệ để Prometheus lấy metrics"""
     try:
         logger.debug("Serving Prometheus metrics")
         return Response(generate_latest(REGISTRY), mimetype='text/plain')
