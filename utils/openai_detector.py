@@ -1,4 +1,3 @@
-
 import openai
 import re
 import json
@@ -35,6 +34,7 @@ class OpenAIDetector:
         """
         Detect country and attributes using ChatGPT.
         Returns: {"attributes": {...}}
+        HOẶC (khi lỗi): {"attributes": {...fallback...}, "error": "...", "error_code": "..."}
         """
         if not text or not text.strip():
             return self._fallback_result()
@@ -48,7 +48,7 @@ class OpenAIDetector:
             max_length = 800
             truncated_text = cleaned_text[:max_length] + "..." if len(cleaned_text) > max_length else cleaned_text
             
-            system_prompt = """あなたは商品説明の製造国・属性検出の専門家です。製造/原産国に焦点を当て、配送先やブランド名から推測しないでください。
+            system_prompt = """Bạn là商品説明の製造国・属性検出の専門家です。製造/原産国に焦点を当て、配送先やブランド名から推測しないでください。
 
 【JSON構造】:
 レスポンスは有効なJSONのみ出力してください。
@@ -146,11 +146,34 @@ JSONのみ出力。"""
                 print(f"[DEBUG] JSON parse error: {e}, fallback to heuristic")
                 return self._fallback_parse(raw_text, text) 
         
+
+        except openai.RateLimitError as e:
+            print(f"[ERROR] OpenAI Quota Exceeded or Rate Limit: {e}")
+            result = self._fallback_result()
+            result["error"] = "OpenAI quota exceeded or rate limit hit."
+            result["error_code"] = "QUOTA_ERROR"
+            return result
+        except openai.AuthenticationError as e:
+            print(f"[ERROR] OpenAI Authentication Error: {e}")
+            result = self._fallback_result()
+            result["error"] = "Invalid OpenAI API key. Check configuration."
+            result["error_code"] = "AUTH_ERROR"
+            return result
+        except (openai.APIConnectionError, openai.APIStatusError, openai.BadRequestError) as e:
+            print(f"[ERROR] OpenAI API/Network Error: {e}")
+            result = self._fallback_result()
+            result["error"] = f"OpenAI API error: {str(e)}"
+            result["error_code"] = "API_ERROR"
+            return result
+        
         except Exception as e:
-            print(f"[ERROR] OpenAI API Error: {str(e)}")
+            print(f"[ERROR] Unexpected OpenAI Detector Error: {str(e)}")
             import traceback
             traceback.print_exc()
-            return self._fallback_result()
+            result = self._fallback_result()
+            result["error"] = f"Internal processing error: {str(e)}"
+            result["error_code"] = "INTERNAL_ERROR"
+            return result
     
     def _fallback_result(self) -> Dict[str, Any]:
         """Default fallback with new structure"""

@@ -1,53 +1,64 @@
 # 🧠 AI Country Detector
 
-> 🚀 **AI Country Detector** là một hệ thống API dựa trên **Flask**, sử dụng mô hình **OpenAI GPT-4o-mini** để phát hiện **quốc gia sản xuất (country of origin)** từ mô tả sản phẩm.  
-> Hỗ trợ đa ngôn ngữ (🇯🇵 Nhật, 🇬🇧 Anh, 🇻🇳 Việt, 🇨🇳 Trung) và trích xuất thuộc tính sản phẩm như **size, color, material, brand**.
+🚀 **AI Country Detector** là một hệ thống API dựa trên **Flask**, sử dụng mô hình **OpenAI GPT-4o-mini** để phát hiện **quốc gia sản xuất (country of origin)** từ mô tả sản phẩm.  
+API được thiết kế **bất đồng bộ (async)**, **chịu lỗi cao**, và có thể **trích xuất thuộc tính sản phẩm** như `size`, `color`, `material`, `brand` theo cấu trúc **JSON lồng nhau**.
 
 ---
 
 ## 📋 Giới thiệu
 
-**Mục đích:**  
-Phân tích văn bản sản phẩm từ e-commerce để xác định **nguồn gốc sản xuất chính xác** (ví dụ: `"Made in Japan" → ["JP"]`), tránh suy đoán từ brand hoặc địa chỉ.
-
-**Phiên bản:** 1.1.0  
-**Ngôn ngữ chính:** Python 3.12  
-**Dependencies:** Xem `requirements.txt`
+- **Mục đích**: Phân tích văn bản sản phẩm từ e-commerce để xác định nguồn gốc sản xuất chính xác (ví dụ: `"Made in Japan"` → `["JP"]`), tránh suy đoán từ brand hoặc địa chỉ.  
+- **Phiên bản**: `1.4.1`  
+- **Ngôn ngữ chính**: Python 3.12+  
+- **Dependencies**: Xem `requirements.txt`
 
 ---
 
 ## ✨ Tính năng chính
 
-- 🗺️ **Phát hiện quốc gia**: Trả về mảng mã **ISO 3166-1 alpha-2** (vd: `["JP", "VN"]`) với **độ tin cậy (confidence)** 0.0–1.0  
-- 🎨 **Trích xuất thuộc tính**: `size`, `color`, `material`, `brand`  
-  → Hỗ trợ đa giá trị, ví dụ: `"Glacier Grey / Pure Silver"`
-- 🌐 **Hỗ trợ đa ngôn ngữ**: Tự động phát hiện & dịch nếu cần (giữ nguyên JP/EN/VI/ZH)
-- ⚙️ **Tối ưu hóa**:
-  - Cache LRU (1000 entries)
-  - Logging xoay vòng (rotating file)
-  - Prometheus metrics
-  - Làm sạch HTML/table
-- 🧩 **Fallback**: Dùng heuristic regex nếu OpenAI lỗi
+### 🗺️ Phát hiện quốc gia
+Trả về mảng mã **ISO 3166-1 alpha-2** (ví dụ: `["JP", "VN"]`) cùng bằng chứng (`evidence`) và độ tin cậy (`confidence`) 0.0–1.0.
+
+### 🎨 Trích xuất thuộc tính
+Bao gồm `size`, `color`, `material`, `brand` — với cấu trúc JSON lồng nhau chi tiết (`value`, `evidence`, `confidence`).
+
+### ⚡ Xử lý bất đồng bộ (Async)
+Tận dụng `asyncio` và `AsyncOpenAI (v1.x+)` để gọi API OpenAI, hỗ trợ batch song song (`asyncio.gather`) cho hiệu suất tối đa.
+
+### 🛡️ Xử lý lỗi chi tiết
+Tự động bắt các lỗi cụ thể từ OpenAI (`RateLimitError`, `AuthenticationError`, v.v.) và trả về mã lỗi JSON rõ ràng, không làm crash API.
+
+### ⚙️ Tối ưu hóa
+- Cache LRU (1000 entries)  
+- Logging xoay vòng  
+- Prometheus metrics  
+- Làm sạch HTML / ký tự rác tự động  
+
+### 🧩 Fallback
+Tự động dùng heuristic **regex** nếu AI trả về JSON không hợp lệ.
 
 ---
 
 ## 🔌 Endpoints
 
-| Method | Endpoint | Mô tả |
-|---------|-----------|-------|
-| `POST` | `/detect-country` | Phân tích mô tả đơn lẻ |
-| `POST` | `/batch-detect` | Phân tích hàng loạt |
-| `GET`  | `/health` | Kiểm tra tình trạng API |
-| `GET`  | `/metrics` | Xuất Prometheus metrics |
+> Tất cả các endpoint (ngoại trừ `/health` và `/metrics`) yêu cầu header `X-API-KEY` để xác thực.
+
+| Method | Endpoint         | Yêu cầu X-API-KEY | Mô tả |
+|:-------|:------------------|:------------------|:------|
+| POST   | `/detect-country` | ✅ Có             | Phân tích mô tả đơn lẻ |
+| POST   | `/batch-detect`   | ✅ Có             | Phân tích hàng loạt (song song) |
+| GET    | `/health`         | ❌ Không          | Kiểm tra tình trạng API |
+| GET    | `/metrics`        | ❌ Không          | Xuất Prometheus metrics |
 
 ---
 
 ## 🧱 Prerequisites
 
-- 🐍 Python **3.12+**
-- 🧭 Git
-- 🐳 Docker & Docker Compose (nếu chạy container)
-- 🔑 Tài khoản OpenAI API để lấy `OPENAI_API_KEY`
+- 🐍 Python 3.12+  
+- 🧭 Git  
+- 🐳 Docker & Docker Compose (nếu chạy container)  
+- 🔑 Tài khoản OpenAI API để lấy `OPENAI_API_KEY`  
+- 🔑 Biến `API_KEYS` trong `.env` để xác thực client  
 
 ---
 
@@ -55,52 +66,61 @@ Phân tích văn bản sản phẩm từ e-commerce để xác định **nguồn
 
 ### 1️⃣ Clone repository
 
-Repo được host trên **Backlog Git**.
-
 ```bash
-# Cách 1: Clone trực tiếp (cần quyền truy cập Backlog)
+# Cách 1: Clone trực tiếp
 git clone https://aiot-inc.backlog.com/git/AIOT_AI_LAB/aal-product-information-extraction.git
 cd aal-product-information-extraction
 
 # Cách 2: Clone qua SSH
 git clone git@aiot-inc.backlog.com:AIOT_AI_LAB/aal-product-information-extraction.git
 cd aal-product-information-extraction
-
 ```
-
-### Cấu trúc thư mục:
+Cấu trúc thư mục:
 ```bash
 aal-product-information-extraction/
-├── app.py
+├── app.py                  # Flask main file
 ├── requirements.txt
 ├── utils/
-│   ├── openai_detector.py
-│   └── validator.py
+│   ├── openai_detector.py  # Async logic
+│   └── validator.py        # Country validation
 ├── Dockerfile
 ├── docker-compose.yml
-└── .env.example  # Copy thành .env
+└── .env.example            # Copy thành .env
 ```
-
 ### 2️⃣ Tạo file .env
-Tạo từ mẫu .env.example hoặc tự viết mới:
 ```bash
 cp .env.example .env
 ```
-### 3️⃣ Cài đặt dependencies
+Ví dụ nội dung .env:
+```bash
+# OpenAI API Key (service)
+OPENAI_API_KEY="sk-..."
+
+# API Keys (cho client, cách nhau bằng dấu phẩy)
+API_KEYS="key_client_1,key_client_2"
+
+# Config
+PORT=5000
+LOG_LEVEL=INFO
+FLASK_DEBUG=False
+```
+### 3️⃣ Cài dependencies
 ```bash
 pip install -r requirements.txt
 ```
-🚀 Chạy ứng dụng
-🔹 Cách 1: Local Dev Mode (Flask)
+### 🚀 Chạy ứng dụng
+#### 🔹 Cách 1: Local Dev Mode (Flask)
 ```bash
 export FLASK_APP=app.py
 python app.py
 ```
 Ứng dụng chạy tại: http://localhost:5000
+
 Test nhanh:
 ```bash
 curl -X POST http://localhost:5000/detect-country \
   -H "Content-Type: application/json" \
+  -H "X-API-KEY: <your_api_key_in_env>" \
   -d '{"description": "日本製、サイズM、赤いNikeシャツ"}'
 ```
 Kết quả mẫu:
@@ -108,65 +128,79 @@ Kết quả mẫu:
 {
   "result": "OK",
   "data": {
-    "country": ["JP"],
-    "confidence": 1.0,
     "attributes": {
-      "size": "M",
-      "color": "red",
-      "material": "none",
-      "brand": "Nike"
+      "country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0},
+      "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0},
+      "color": {"value": "赤い", "evidence": "赤いNikeシャツ", "confidence": 0.8},
+      "material": {"value": "none", "evidence": "none", "confidence": 0.0},
+      "brand": {"value": "Nike", "evidence": "赤いNikeシャツ", "confidence": 0.9}
     },
     "cache": false,
     "time": 250
   }
 }
 ```
-🔹 Cách 2: Production-like (Gunicorn)
+#### 🔹 Cách 2: Production-like (Gunicorn)
 ```bash
 pip install gunicorn
 gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 30 --log-level info app:app
 ```
-🔹 Cách 3: Docker Compose (Khuyến nghị)
+#### 🔹 Cách 3: Docker Compose (Khuyến nghị)
 ```bash
-# Build và chạy
-docker-compose up --build
-
-# Chạy background
-docker-compose up -d --build
-
-# Xem logs
-docker-compose logs -f
-
-# Dừng
-docker-compose down
+docker-compose up --build        # Build & run
+docker-compose up -d --build     # Run background
+docker-compose logs -f           # Xem logs
+docker-compose down              # Dừng
 ```
-App chạy tại http://localhost:5000
+Ứng dụng chạy tại: http://localhost:5000
 
-Volume mount code cho hot-reload (dev), logs lưu tại ./app.log.
-
-🧠 Sử dụng API
-🔸 1. Single Detection /detect-country
+### 🧠 Sử dụng API
+Tất cả request cần có header:
+```bash
+Content-Type: application/json
+X-API-KEY: <your_api_key_in_env>
+```
+#### 🔸 1. Single Detection /detect-country
 ```bash
 POST /detect-country
-Content-Type: application/json
 {
   "description": "Mô tả sản phẩm"
 }
 ```
-🔸 2. Batch Detection /batch-detect
+Response (Lỗi OpenAI):
 ```bash
-POST /batch-detect
-Content-Type: application/json
 {
-  "descriptions": ["text1", "text2"]
+  "result": "Failed",
+  "errors": [
+    {
+      "code": "QUOTA_ERROR",
+      "message": "OpenAI quota exceeded or rate limit hit."
+    }
+  ]
 }
 ```
-Response:
+#### 🔸 2. Batch Detection /batch-detect
+```bash
+POST /batch-detect
+{
+  "descriptions": ["Made in Wales", "原産国: Indonesia / Vietnam"]
+}
+```
+Response (Batch):
 ```bash
 {
   "result": "OK",
   "data": {
-    "results": [{...}, {...}],
+    "results": [
+      {
+        "attributes": { "country": {"value": ["GB"], "evidence": "Made in Wales"} },
+        "cache": false
+      },
+      {
+        "attributes": { "country": {"value": ["ID", "VN"], "evidence": "原産国: Indonesia / Vietnam"} },
+        "cache": false
+      }
+    ],
     "total": 2,
     "cache_hits": 0,
     "ai_calls": 2,
@@ -174,61 +208,65 @@ Response:
   }
 }
 ```
-🔸 3. Health Check /health
+#### 🔸 3. Health Check /health
 ```bash
-{"status": "healthy", "service": "AI Country Detector", "version": "1.1.0"}
+GET /health
 ```
-🔸 4. Metrics /metrics
-Trả về định dạng Prometheus, dùng cho Grafana/Prometheus dashboard.
-
-🧪 Testing
-
-🧰 Manual test:
+Response:
+```bash
+{"status": "healthy", "service": "AI Country Detector", "version": "1.4.1"}
+```
+#### 🔸 4. Metrics /metrics
+Xuất định dạng Prometheus (dùng cho Grafana / Prometheus dashboard).
+### 🧪 Testing
+Manual test:
 ```bash
 curl http://localhost:5000/health
 ```
-🧩 Ví dụ mô tả:
+Ví dụ mô tả:
 
-🇯🇵 "原産国: Indonesia / Vietnam、サイズ23cm/24cm"
+| Mô tả                                           | Kết quả        |
+| :---------------------------------------------- | :------------- |
+| 🇯🇵 `"原産国: Indonesia / Vietnam、サイズ23cm/24cm"`  | `["ID", "VN"]` |
+| 🇬🇧 `"Made in China, black cotton Nike shirt"` | `["CN"]`       |
+| 🏴 `"Made in Wales. RASWカシミヤセーター、アイボリー"`        | `["GB"]`       |
+| 🧨 (Rỗng)                                       | `["ZZ"]`       |
 
-🇬🇧 "Made in China, black cotton Nike shirt"
+### 📈 Monitoring & Logs
+Logs: Console & app.log (xoay vòng, 10MB × 5 files)
 
-🧨 Edge case: Rỗng → {"country": ["ZZ"], "confidence": 0.0}
-
-📈 Monitoring & Logs
-
-📜 Logs: Console hoặc ./app.log (xoay vòng, tối đa 10MB)
-
-📊 Metrics: /metrics → Prometheus counters
+Metrics: /metrics → Prometheus counters
 
 api_requests_total
 
 api_request_duration_seconds
 
-💾 Cache: Tự động lưu với confidence > 0.5
-🧩 Troubleshooting
-| Vấn đề               | Nguyên nhân & Giải pháp                                |
-| -------------------- | ------------------------------------------------------ |
-| ❌ OpenAI lỗi         | Kiểm tra `OPENAI_API_KEY`, quota, hoặc API down        |
-| ⚙️ Langdetect fail   | Với text ngắn → fallback giữ nguyên                    |
-| 🔄 Port conflict     | Thay `PORT` trong `.env`                               |
-| 🐳 Docker build fail | Cập nhật Docker version / pull base image mới          |
-| ⚠️ JSON parse error  | Do prompt OpenAI → kiểm tra log, set `temperature=0.0` |
+Cache: Lưu cache nếu confidence > 0.5
+
+### 🧩 Troubleshooting
+| Vấn đề               | Nguyên nhân & Giải pháp                           |
+| :------------------- | :------------------------------------------------ |
+| ❌ 401 Unauthorized   | Quên gửi `X-API-KEY` hoặc sai key                 |
+| ❌ 503/500 (OpenAI)   | Hết quota / sai `OPENAI_API_KEY`                  |
+| ⚠️ JSON parse error  | AI trả về text không hợp lệ → fallback regex      |
+| 🔄 Port conflict     | Đổi `PORT` trong `.env` hoặc `docker-compose.yml` |
+| 🐳 Docker build fail | Cập nhật Docker / base image                      |
 
 
-🧩 Tech Stack
-| Thành phần         | Công nghệ               |
-| ------------------ | ----------------------- |
-| Backend            | Flask 3.x               |
-| AI Model           | OpenAI GPT-4o-mini      |
-| Language Detection | langdetect              |
-| Metrics            | prometheus-client       |
-| Container          | Docker / Docker Compose |
-| Logging            | RotatingFileHandler     |
-| Python             | 3.12                    |
+### 🧩 Tech Stack
 
+| Thành phần        | Công nghệ               |
+| :---------------- | :---------------------- |
+| Backend           | Flask 3.x               |
+| AI Model          | OpenAI GPT-4o-mini      |
+| AI Client (Async) | openai (v1.x+)          |
+| Async Runtime     | asyncio                 |
+| Metrics           | prometheus-client       |
+| Container         | Docker / Docker Compose |
+| Logging           | RotatingFileHandler     |
+| Python            | 3.12+                   |
 
-📜 License
-
+### 📜 License
 Bản quyền © 2025 AIOT Inc.
+
 Phát triển bởi AIOT_AI_LAB
