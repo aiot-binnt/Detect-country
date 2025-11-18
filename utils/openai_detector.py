@@ -45,7 +45,7 @@ class OpenAIDetector:
              return self._fallback_result()
         
         try:
-            max_length = 800
+            max_length = 1000
             truncated_text = cleaned_text[:max_length] + "..." if len(cleaned_text) > max_length else cleaned_text
             
             system_prompt = """Bạn là商品説明の製造国・属性検出の専門家です。製造/原産国に焦点を当て、配送先やブランド名から推測しないでください。
@@ -56,9 +56,7 @@ class OpenAIDetector:
   "attributes": {
     "country": {"value": ["XX"], "evidence": "none", "confidence": 0.0},
     "size": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "color": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "material": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "brand": {"value": "none", "evidence": "none", "confidence": 0.0}
+    "material": {"value": "none", "evidence": "none", "confidence": 0.0}
   }
 }
 
@@ -87,19 +85,15 @@ class OpenAIDetector:
     * 例: "China" (中国) -> `["CN"]`
 
 【Other Attributes ルール】:
-1.  `size`, `material`, `brand`: (変更なし)
-2.  **`color` (色) ルール (重要):**
-    * `value`には、原文で見つかった**正確な**色の記述（例: "Glacier Grey/Pure Silver", "ブルー系（青・紺・ネイビー）"）をそのまま抽出してください。
-    * **翻訳や単純化（例: 「ネイビー」を「blue」に変える）は絶対に行わないでください。** 見つかった文字列全体を `value` として返します。
-3.  見つからない場合は `{"value": "none", "evidence": "none", "confidence": 0.0}`。
+1.  `size`, `material`: 見つからない場合は `{"value": "none", "evidence": "none", "confidence": 0.0}`。
 
 【例】:
 - "日本製、サイズM、レッドコットンNikeシャツ" →
-  {"attributes": {"country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0}, "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0}, "color": {"value": "red", "evidence": "レッドコットン", "confidence": 0.8}, "material": {"value": "cotton", "evidence": "レッドコットン", "confidence": 0.8}, "brand": {"value": "Nike", "evidence": "Nikeシャツ", "confidence": 0.9}}}
+  {"attributes": {"country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0}, "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0}, "material": {"value": "cotton", "evidence": "レッドコットン", "confidence": 0.8}}}
 - "【原産国】Indonesia / Vietnam、カラーGlacier Grey/Pure Silver" →
-  {"attributes": {"country": {"value": ["ID", "VN"], "evidence": "【原産国】Indonesia / Vietnam", "confidence": 1.0}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "color": {"value": "Glacier Grey/Pure Silver", "evidence": "カラーGlacier Grey/Pure Silver", "confidence": 1.0}, "material": {"value": "none", "evidence": "none", "confidence": 0.0}, "brand": {"value": "none", "evidence": "none", "confidence": 0.0}}}
+  {"attributes": {"country": {"value": ["ID", "VN"], "evidence": "【原産国】Indonesia / Vietnam", "confidence": 1.0}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "material": {"value": "none", "evidence": "none", "confidence": 0.0}}}
 - "日本発送; Made in Wales. RASWカシミヤセーター、アイボリー" →
-  {"attributes": {"country": {"value": ["GB"], "evidence": "Made in Wales", "confidence": 0.9}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "color": {"value": "ivory", "evidence": "アイボリー", "confidence": 0.9}, "material": {"value": "cashmere", "evidence": "カシミヤセーター", "confidence": 1.0}, "brand": {"value": "RASW", "evidence": "RASWカシミヤセーター", "confidence": 1.0}}}
+  {"attributes": {"country": {"value": ["GB"], "evidence": "Made in Wales", "confidence": 0.9}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "material": {"value": "cashmere", "evidence": "カシミヤセーター", "confidence": 1.0}}}
 
 JSONのみ出力。"""
 
@@ -181,9 +175,7 @@ JSONのみ出力。"""
             "attributes": {
                 "country": {"value": ["ZZ"], "evidence": "none", "confidence": 0.0},
                 "size": {"value": "none", "evidence": "none", "confidence": 0.0},
-                "color": {"value": "none", "evidence": "none", "confidence": 0.0},
-                "material": {"value": "none", "evidence": "none", "confidence": 0.0},
-                "brand": {"value": "none", "evidence": "none", "confidence": 0.0}
+                "material": {"value": "none", "evidence": "none", "confidence": 0.0}
             }
         }
     
@@ -213,14 +205,7 @@ JSONのみ出力。"""
             if size_match:
                 attributes["size"] = {"value": size_match.group(2).strip(), "evidence": size_match.group(1).strip(), "confidence": 0.3}
 
-            color_match = re.search(r'((?:color|カラー|色|颜色)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff/ ]+))', original_text, re.IGNORECASE)
-            if not color_match:
-                color_match = re.search(r'(アイボリー|ivory|black|red|blue|white|黒|赤|青|Glacier Grey/Pure Silver)', original_text, re.IGNORECASE)
-                if color_match:
-                    attributes["color"] = {"value": color_match.group(1).strip(), "evidence": color_match.group(1).strip(), "confidence": 0.3}
-            elif color_match:
-                attributes["color"] = {"value": color_match.group(2).strip(), "evidence": color_match.group(1).strip(), "confidence": 0.3}
-            
+
             material_match = re.search(r'((?:material|素材|材料)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff0-9％/・]+))', original_text, re.IGNORECASE)
             if not material_match:
                 material_match = re.search(r'(カシミヤ|cashmere|cotton|wool)', original_text, re.IGNORECASE)
@@ -228,14 +213,6 @@ JSONのみ出力。"""
                     attributes["material"] = {"value": material_match.group(1).strip(), "evidence": material_match.group(1).strip(), "confidence": 0.3}
             elif material_match:
                 attributes["material"] = {"value": material_match.group(2).strip(), "evidence": material_match.group(1).strip(), "confidence": 0.3}
-
-            brand_match = re.search(r'((?:brand|ブランド)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff（）]+))', original_text, re.IGNORECASE)
-            if not brand_match:
-                brand_match = re.search(r'(ASICS|RASW|Nike)', original_text, re.IGNORECASE)
-                if brand_match:
-                    attributes["brand"] = {"value": brand_match.group(1).strip(), "evidence": brand_match.group(1).strip(), "confidence": 0.3}
-            elif brand_match:
-                attributes["brand"] = {"value": brand_match.group(2).strip(), "evidence": brand_match.group(1).strip(), "confidence": 0.3}
 
 
             print(f"[DEBUG] Fallback result: attrs={attributes}")
