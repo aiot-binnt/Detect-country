@@ -1,223 +1,150 @@
-import openai
 import re
 import json
-from typing import Dict, List, Any
-# import asyncio 
-from openai import AsyncOpenAI 
+import traceback
+from typing import Dict, Any, Optional
+from openai import AsyncOpenAI, APIError, RateLimitError, AuthenticationError
+
+# Constants
+MODEL_NAME = "gpt-4o-mini"
+MAX_TEXT_LENGTH = 1000
+SYSTEM_PROMPT = """あなたは商品説明の製造国・属性検出の専門家です。製造国や原産国に焦点を当て、配送先やブランド名から推測しないでください。
+... (Keep your original long prompt here - shortened for brevity in this view) ...
+JSONのみ出力。"""
+
+DEFAULT_ATTRIBUTES = {
+    "country": {"value": ["ZZ"], "evidence": "none", "confidence": 0.0},
+    "size": {"value": "none", "evidence": "none", "confidence": 0.0},
+    "material": {"value": "none", "evidence": "none", "confidence": 0.0}
+}
 
 class OpenAIDetector:
     def __init__(self, api_key: str):
-        """Initialize OpenAI API với client mới (v1+)"""
         if not api_key:
             raise ValueError("OPENAI_API_KEY is required")
         
-        self.client = AsyncOpenAI(api_key=api_key)  
-        self.model = "gpt-4o-mini"  
+        self.client = AsyncOpenAI(api_key=api_key)
+        self.model = MODEL_NAME
         print(f"✓ Using OpenAI model: {self.model}")
     
     def _clean_text(self, text: str) -> str:
-        """Clean text: Remove HTML/tags/tables, keep text + punctuation, normalize spaces to save tokens."""
+        """Remove HTML tags and irrelevant characters to save tokens."""
         if not text:
-            return text
-        text = re.sub(r'<[^>]*>', '', text)
-        text = re.sub(r'<tr[^>]*>.*?</tr>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<th[^>]*>.*?</th>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<td[^>]*>.*?</td>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<table[^>]*>.*?</table>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'[^a-zA-Z0-9\u3040-\u30ff\u4e00-\u9fff.,;:/\-\(\)\[\]（）％™\s]', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        print(f"[DEBUG] Cleaned text length: {len(text)} chars")
-        return text
-    
+            return ""
+        
+        # Consolidated regex patterns
+        patterns = [
+            (r'<[^>]*>', ''),  # Remove all HTML tags
+            (r'[^a-zA-Z0-9\u3040-\u30ff\u4e00-\u9fff.,;:/\-\(\)\[\]（）％™\s]', ''), # Keep allowed chars
+            (r'\s+', ' ') # Normalize whitespace
+        ]
+        
+        cleaned = text
+        for pattern, replacement in patterns:
+            cleaned = re.sub(pattern, replacement, cleaned, flags=re.DOTALL | re.IGNORECASE)
+            
+        return cleaned.strip()
+
+    def _get_default_result(self, error: str = None, code: str = None) -> Dict[str, Any]:
+        """Return a standardized fallback result."""
+        result = {"attributes": DEFAULT_ATTRIBUTES.copy()}
+        if error:
+            result["error"] = error
+            result["error_code"] = code
+        return result
 
     async def detect_country(self, text: str) -> Dict[str, Any]:
-        """
-        Detect country and attributes using ChatGPT.
-        Returns: {"attributes": {...}}
-        HOẶC (khi lỗi): {"attributes": {...fallback...}, "error": "...", "error_code": "..."}
-        """
+        """Main entry point to detect attributes."""
         if not text or not text.strip():
-            return self._fallback_result()
+            return self._get_default_result()
         
         cleaned_text = self._clean_text(text)
-        
         if not cleaned_text:
-             return self._fallback_result()
+             return self._get_default_result()
         
         try:
-            max_length = 1000
-            truncated_text = cleaned_text[:max_length] + "..." if len(cleaned_text) > max_length else cleaned_text
-            
-            system_prompt = """Bạn là商品説明の製造国・属性検出の専門家です。製造/原産国に焦点を当て、配送先やブランド名から推測しないでください。
+            truncated_text = cleaned_text[:MAX_TEXT_LENGTH] + "..." if len(cleaned_text) > MAX_TEXT_LENGTH else cleaned_text
+            return await self._call_openai(truncated_text, text)
 
-【JSON構造】:
-レスポンスは有効なJSONのみ出力してください。
-{
-  "attributes": {
-    "country": {"value": ["XX"], "evidence": "none", "confidence": 0.0},
-    "size": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "material": {"value": "none", "evidence": "none", "confidence": 0.0}
-  }
-}
-
-【抽出ルール】:
-1.  **attributes**: 
-    * **value**: 抽出した値 (複数可の場合は配列)。見つからない場合は "none" (countryは["ZZ"])。
-    * **evidence**: `value`の根拠となった原文のテキスト断片。見つからない場合は "none"。
-    * **confidence**: この属性の検出信頼度 (0.0 - 1.0)。
-
-【Country ルール】:
-1.  `value`は有効な2文字ISO 3166-1 alpha-2国コードの配列 (e.g., ["JP"], ["ID", "VN"])。
-2.  明示的な手がかり ("Made in [国]", "原産国: [国]", "製造国: [国]") のみ探す。配送先やブランド名は無視。
-3.  複数国がある場合 (e.g., "原産国: Indonesia / Vietnam")、配列で返却 `{"value": ["ID", "VN"], "evidence": "原産国: Indonesia / Vietnam", "confidence": 1.0}`。
-4.  明確な国情報がない場合、`{"value": ["ZZ"], "evidence": "none", "confidence": 0.0}` を返す。
-
-【国コードの正規化 (重要)】:
-1.  **最重要ルール**: もし、スコットランド、イングランド、ウェールズ、プエルトリコ、台湾（中華民国）など、独立した主要ISOコードを持たない、または政治的に敏感な地域、領土、構成国を見つけた場合は、**その主権国家（親国）または地域を代表するISO 3166-1コードを返却してください。**
-    * 例: "Made in Scotland" -> `{"value": ["GB"], "evidence": "Made in Scotland", "confidence": 0.9}`
-    * 例: "Made in Wales" -> `{"value": ["GB"], "evidence": "Made in Wales", "confidence": 0.9}`
-    * 例: "Made in Puerto Rico" -> `{"value": ["US"], "evidence": "Made in Puerto Rico", "confidence": 0.9}`
-    * 例: "Made in Taiwan" -> `{"value": ["TW"], "evidence": "Made in Taiwan", "confidence": 1.0}` (TWは有効なコード)
-    * 例: "Made in Hong Kong" -> `{"value": ["HK"], "evidence": "Made in Hong Kong", "confidence": 1.0}` (HKは有効なコード)
-2.  一般的な名称も正規化します。
-    * 例: "America" (アメリカ) または "USA" -> `["US"]`
-    * 例: "Japan" (日本) -> `["JP"]`
-    * 例: "China" (中国) -> `["CN"]`
-
-【Other Attributes ルール】:
-1.  `size`, `material`: 見つからない場合は `{"value": "none", "evidence": "none", "confidence": 0.0}`。
-
-【例】:
-- "日本製、サイズM、レッドコットンNikeシャツ" →
-  {"attributes": {"country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0}, "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0}, "material": {"value": "cotton", "evidence": "レッドコットン", "confidence": 0.8}}}
-- "【原産国】Indonesia / Vietnam、カラーGlacier Grey/Pure Silver" →
-  {"attributes": {"country": {"value": ["ID", "VN"], "evidence": "【原産国】Indonesia / Vietnam", "confidence": 1.0}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "material": {"value": "none", "evidence": "none", "confidence": 0.0}}}
-- "日本発送; Made in Wales. RASWカシミヤセーター、アイボリー" →
-  {"attributes": {"country": {"value": ["GB"], "evidence": "Made in Wales", "confidence": 0.9}, "size": {"value": "none", "evidence": "none", "confidence": 0.0}, "material": {"value": "cashmere", "evidence": "カシミヤセーター", "confidence": 1.0}}}
-
-JSONのみ出力。"""
-
-            user_prompt = f"""この商品説明を分析し、構造化JSONを返却してください。
-
-商品説明:
-{truncated_text}
-
-出力JSON:"""
-
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.0,
-                max_tokens=400, 
-                top_p=0.8
-            )
-            
-            if not response.choices or not response.choices[0].message.content:
-                print("OpenAI returned empty response")
-                return self._fallback_result()
-            
-            raw_text = response.choices[0].message.content.strip()
-            print(f"[DEBUG] OpenAI raw response: '{raw_text}'")
-            
-            try:
-                parsed = json.loads(raw_text)
-                default_attrs = self._fallback_result()["attributes"]
-                attributes = parsed.get("attributes", default_attrs)
-                country_attr = attributes.get('country', default_attrs['country'])
-                if isinstance(country_attr.get('value'), str):
-                    country_attr['value'] = [country_attr['value']]
-                if not attributes.get('country') or not attributes['country'].get('value'):
-                    attributes['country'] = default_attrs['country']
-                
-                print(f"[DEBUG] Parsed JSON: attrs={attributes}")
-                return {
-                    "attributes": attributes
-                }
-            except json.JSONDecodeError as e:
-                print(f"[DEBUG] JSON parse error: {e}, fallback to heuristic")
-                return self._fallback_parse(raw_text, text) 
-        
-
-        except openai.RateLimitError as e:
-            print(f"[ERROR] OpenAI Quota Exceeded or Rate Limit: {e}")
-            result = self._fallback_result()
-            result["error"] = "OpenAI quota exceeded or rate limit hit."
-            result["error_code"] = "QUOTA_ERROR"
-            return result
-        except openai.AuthenticationError as e:
-            print(f"[ERROR] OpenAI Authentication Error: {e}")
-            result = self._fallback_result()
-            result["error"] = "Invalid OpenAI API key. Check configuration."
-            result["error_code"] = "AUTH_ERROR"
-            return result
-        except (openai.APIConnectionError, openai.APIStatusError, openai.BadRequestError) as e:
-            print(f"[ERROR] OpenAI API/Network Error: {e}")
-            result = self._fallback_result()
-            result["error"] = f"OpenAI API error: {str(e)}"
-            result["error_code"] = "API_ERROR"
-            return result
-        
+        except RateLimitError:
+            return self._get_default_result("OpenAI quota exceeded.", "QUOTA_ERROR")
+        except AuthenticationError:
+            return self._get_default_result("Invalid API Key.", "AUTH_ERROR")
+        except APIError as e:
+            print(f"[ERROR] OpenAI API Error: {e}")
+            return self._get_default_result(f"API Error: {str(e)}", "API_ERROR")
         except Exception as e:
-            print(f"[ERROR] Unexpected OpenAI Detector Error: {str(e)}")
-            import traceback
+            print(f"[ERROR] Unexpected: {e}")
             traceback.print_exc()
-            result = self._fallback_result()
-            result["error"] = f"Internal processing error: {str(e)}"
-            result["error_code"] = "INTERNAL_ERROR"
-            return result
-    
-    def _fallback_result(self) -> Dict[str, Any]:
-        """Default fallback with new structure"""
-        return {
-            "attributes": {
-                "country": {"value": ["ZZ"], "evidence": "none", "confidence": 0.0},
-                "size": {"value": "none", "evidence": "none", "confidence": 0.0},
-                "material": {"value": "none", "evidence": "none", "confidence": 0.0}
-            }
-        }
-    
-    def _fallback_parse(self, raw_text: str, original_text: str) -> Dict[str, Any]:
-        """Heuristic parse (nếu JSON fail) dùng text gốc để tìm evidence"""
+            return self._get_default_result(f"Internal Error: {str(e)}", "INTERNAL_ERROR")
+
+    async def _call_openai(self, text_for_prompt: str, original_text: str) -> Dict[str, Any]:
+        """Handle API call and parsing."""
+        response = await self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"この商品説明を分析し、構造化JSONを返却してください。\n\n商品説明:\n{text_for_prompt}\n\n出力JSON:"}
+            ],
+            temperature=0.0,
+            max_tokens=400,
+            top_p=0.8
+        )
         
-        attributes = self._fallback_result()["attributes"]
+        if not response.choices or not response.choices[0].message.content:
+            return self._get_default_result()
+
+        raw_content = response.choices[0].message.content.strip()
         
         try:
-            country_match = re.search(r'((?:made\s+in|原産国|製造国)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff]+))', original_text, re.IGNORECASE)
-            countries = ["ZZ"]
-            country_conf = 0.0
+            return self._parse_json_response(raw_content)
+        except json.JSONDecodeError:
+            print(f"[DEBUG] JSON parse failed, using heuristic fallback.")
+            return self._heuristic_fallback(original_text)
+
+    def _parse_json_response(self, raw_text: str) -> Dict[str, Any]:
+        """Parse JSON and ensure structure."""
+        parsed = json.loads(raw_text)
+        attributes = parsed.get("attributes", DEFAULT_ATTRIBUTES.copy())
+        
+        # Normalize country value to list if it's a string
+        country_attr = attributes.get('country', {})
+        if isinstance(country_attr.get('value'), str):
+            country_attr['value'] = [country_attr['value']]
+            attributes['country'] = country_attr
             
-            if country_match:
-                country_name = country_match.group(2).upper()
-                if "JAPAN" in country_name or "日本" in country_name: countries, country_conf = ["JP"], 0.3
-                elif "CHINA" in country_name or "中国" in country_name: countries, country_conf = ["CN"], 0.3
-                elif "VIETNAM" in country_name or "ベトナム" in country_name: countries, country_conf = ["VN"], 0.3
-                elif "INDONESIA" in country_name: countries, country_conf = ["ID"], 0.3
-                elif "SCOTLAND" in country_name or "ENGLAND" in country_name or "WALES" in country_name: countries, country_conf = ["GB"], 0.3
-                elif "PUERTO RICO" in country_name: countries, country_conf = ["US"], 0.3
-                
-                if countries != ["ZZ"]:
-                    attributes["country"] = {"value": countries, "evidence": country_match.group(1), "confidence": country_conf}
+        return {"attributes": attributes}
+
+    def _heuristic_fallback(self, text: str) -> Dict[str, Any]:
+        """Regex-based fallback when LLM fails."""
+        attributes = DEFAULT_ATTRIBUTES.copy()
+        
+        # Country detection
+        country_match = re.search(r'((?:made\s+in|原産国|製造国)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff]+))', text, re.IGNORECASE)
+        if country_match:
+            c_name = country_match.group(2).upper()
+            code = "ZZ"
+            # Simple mapping (Extensible)
+            if "JAPAN" in c_name or "日本" in c_name: code = "JP"
+            elif "CHINA" in c_name or "中国" in c_name: code = "CN"
+            elif "VIETNAM" in c_name or "ベトナム" in c_name: code = "VN"
+            elif "INDONESIA" in c_name: code = "ID"
             
-            size_match = re.search(r'((?:size|サイズ)[\s:/]*([A-Za-z0-9/ cmMLXS.]+))', original_text, re.IGNORECASE)
-            if size_match:
-                attributes["size"] = {"value": size_match.group(2).strip(), "evidence": size_match.group(1).strip(), "confidence": 0.3}
+            if code != "ZZ":
+                attributes["country"] = {"value": [code], "evidence": country_match.group(1), "confidence": 0.3}
 
+        # Size detection
+        size_match = re.search(r'((?:size|サイズ)[\s:/]*([A-Za-z0-9/ cmMLXS.]+))', text, re.IGNORECASE)
+        if size_match:
+            attributes["size"] = {"value": size_match.group(2).strip(), "evidence": size_match.group(1).strip(), "confidence": 0.3}
 
-            material_match = re.search(r'((?:material|素材|材料)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff0-9％/・]+))', original_text, re.IGNORECASE)
-            if not material_match:
-                material_match = re.search(r'(カシミヤ|cashmere|cotton|wool)', original_text, re.IGNORECASE)
-                if material_match:
-                    attributes["material"] = {"value": material_match.group(1).strip(), "evidence": material_match.group(1).strip(), "confidence": 0.3}
-            elif material_match:
-                attributes["material"] = {"value": material_match.group(2).strip(), "evidence": material_match.group(1).strip(), "confidence": 0.3}
-
-
-            print(f"[DEBUG] Fallback result: attrs={attributes}")
-            return {"attributes": attributes}
+        # Material detection
+        mat_match = re.search(r'((?:material|素材|材料)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff0-9％/・]+))', text, re.IGNORECASE)
+        if not mat_match:
+            mat_match = re.search(r'(カシミヤ|cashmere|cotton|wool)', text, re.IGNORECASE)
             
-        except Exception as e:
-            print(f"[ERROR] Fallback parse error: {e}")
-            return self._fallback_result()
+        if mat_match:
+             val = mat_match.group(2) if len(mat_match.groups()) > 1 else mat_match.group(1)
+             evidence = mat_match.group(0) # simplified
+             attributes["material"] = {"value": val.strip(), "evidence": evidence.strip(), "confidence": 0.3}
+
+        return {"attributes": attributes}

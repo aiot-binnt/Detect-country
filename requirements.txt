@@ -2,6 +2,7 @@ flask
 flask-cors
 python-dotenv
 openai
+google-generativeai
 langdetect
 prometheus-client
 gunicorn  
