@@ -10,14 +10,9 @@ from google.api_core.exceptions import GoogleAPIError, ResourceExhausted, Unauth
 
 logger = logging.getLogger(__name__)
 
-# Security: Whitelist of allowed models
-ALLOWED_MODELS = {
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.0-pro"
-}
+# Note: We don't restrict models here. Google API will validate model availability.
+# This allows users to use any Gemini/Gemma models (e.g., gemini-2.5-flash, gemma-3-4b)
+# If model doesn't exist or isn't accessible, Google API will return appropriate error.
 
 # Security: Maximum prompt length to prevent abuse
 MAX_PROMPT_LENGTH = 10000  # 10k characters
@@ -30,7 +25,7 @@ class GeminiProxyService:
     @staticmethod
     def validate_model(model_name: str) -> tuple[bool, Optional[str]]:
         """
-        Validate model name against whitelist.
+        Validate model name format.
         
         Args:
             model_name: The model name to validate
@@ -41,9 +36,11 @@ class GeminiProxyService:
         if not model_name:
             return False, "Model name is required"
         
-        if model_name not in ALLOWED_MODELS:
-            return False, f"Model '{model_name}' not allowed. Allowed models: {', '.join(ALLOWED_MODELS)}"
+        # Basic validation: check if model name is not empty and has reasonable format
+        if len(model_name.strip()) < 3:
+            return False, "Invalid model name format"
         
+        # Let Google API validate if the model actually exists
         return True, None
     
     @staticmethod
@@ -179,15 +176,41 @@ class GeminiProxyService:
         """
         Process a complete proxy request with all validations.
         
+        Rules:
+        - No model + No key → Use default model + fallback key ✅
+        - Custom model + No key → Error ❌ (must provide key if using custom model)
+        - No model + Custom key → Error ❌ (must provide model if using custom key)
+        - Custom model + Custom key → Use provided values ✅
+        
         Args:
             prompt: The prompt text
-            model_name: Optional model name (defaults to gemini-2.0-flash)
+            model_name: Optional model name (defaults to DEFAULT_MODEL)
             api_key: Optional custom API key
             fallback_api_key: Fallback API key from server config
             
         Returns:
             Dict with 'success', 'data' or 'error_code', 'error_message'
         """
+        # Check if user is providing custom values
+        has_custom_model = model_name is not None and model_name.strip() != ""
+        has_custom_key = api_key is not None and api_key.strip() != ""
+        
+        # Validation: If providing custom model, must also provide custom key
+        if has_custom_model and not has_custom_key:
+            return {
+                "success": False,
+                "error_code": "VALIDATION_ERROR",
+                "error_message": "Custom model requires custom api_key. Please provide both 'model' and 'api_key' together, or omit both to use defaults."
+            }
+        
+        # Validation: If providing custom key, must also provide custom model
+        if has_custom_key and not has_custom_model:
+            return {
+                "success": False,
+                "error_code": "VALIDATION_ERROR",
+                "error_message": "Custom api_key requires custom model. Please provide both 'model' and 'api_key' together, or omit both to use defaults."
+            }
+        
         # Use default model if not provided
         model = (model_name or DEFAULT_MODEL).strip()
         
