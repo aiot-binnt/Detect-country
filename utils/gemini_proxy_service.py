@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Security: Whitelist of allowed models
 ALLOWED_MODELS = {
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash",
@@ -20,7 +21,7 @@ ALLOWED_MODELS = {
 
 # Security: Maximum prompt length to prevent abuse
 MAX_PROMPT_LENGTH = 10000  # 10k characters
-DEFAULT_MODEL = "gemini-2.0-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class GeminiProxyService:

@@ -15,7 +15,7 @@ from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 
 from utils.validator import validate_countries, UNKNOWN_COUNTRY_CODE
 from utils.gemini_detector import GeminiDetector
-from utils.gemini_proxy_service import GeminiProxyService 
+from utils.gemini_proxy_service import GeminiProxyService, DEFAULT_MODEL 
 
 # --- Configuration & Logging Setup ---
 load_dotenv()
@@ -265,7 +265,7 @@ def gemini_proxy():
     if result["success"]:
         result_data = {
             "response": result["response"],
-            "model": model_name or "gemini-2.0-flash",
+            "model": model_name or DEFAULT_MODEL,
             "time": processing_time
         }
         REQUEST_COUNT.labels('gemini-proxy', 'success').inc()
