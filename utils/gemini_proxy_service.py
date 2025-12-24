@@ -112,8 +112,13 @@ class GeminiProxyService:
             logger.info(f"Calling Gemini API: model={model_name}, prompt_length={len(prompt)}")
             response = model.generate_content(prompt)
             
-            # Extract response text
+            # Extract response text and remove all formatting
             response_text = response.text if hasattr(response, 'text') else str(response)
+            # Remove all newlines, carriage returns, tabs, and normalize whitespace
+            response_text = response_text.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+            # Replace multiple spaces with single space
+            import re
+            response_text = re.sub(r'\s+', ' ', response_text).strip()
             
             return {
                 "success": True,
