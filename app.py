@@ -14,8 +14,7 @@ from dotenv import load_dotenv
 from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 
 from utils.validator import validate_countries, UNKNOWN_COUNTRY_CODE
-from utils.gemini_detector import GeminiDetector
-from utils.gemini_proxy_service import GeminiProxyService, DEFAULT_MODEL 
+from utils.gemini_detector import GeminiDetector 
 
 # --- Configuration & Logging Setup ---
 load_dotenv()
@@ -227,64 +226,6 @@ def batch_detect():
     except Exception as e:
         logger.error(f"Batch error: {traceback.format_exc()}")
         return api_response(False, errors=[{"code": "INTERNAL_ERROR", "message": str(e)}], status=500)
-
-@app.route('/gemini-proxy', methods=['POST'])
-@require_api_key
-@REQUEST_LATENCY.time()
-def gemini_proxy():
-    """
-    Proxy endpoint for Gemini API calls.
-    Allows servers in restricted regions (e.g., China) to call Gemini API through this server.
-    
-    Request body:
-    {
-        "prompt": "Your prompt text here",
-        "model": "gemini-2.0-flash",  // optional, defaults to gemini-2.0-flash
-        "api_key": "your-gemini-api-key"  // optional, uses server's key if not provided
-    }
-    """
-    start_time = time.time()
-    data = request.get_json() or {}
-    
-    # Extract parameters
-    prompt = data.get("prompt", "")
-    model_name = data.get("model")
-    custom_api_key = data.get("api_key")
-    
-    # Process request using service layer
-    result = GeminiProxyService.process_proxy_request(
-        prompt=prompt,
-        model_name=model_name,
-        api_key=custom_api_key,
-        fallback_api_key=os.getenv('GEMINI_API_KEY')
-    )
-    
-    processing_time = int((time.time() - start_time) * 1000)
-    
-    # Handle result
-    if result["success"]:
-        result_data = {
-            "response": result["response"],
-            "model": model_name or DEFAULT_MODEL,
-            "time": processing_time
-        }
-        REQUEST_COUNT.labels('gemini-proxy', 'success').inc()
-        return api_response(True, data=result_data)
-    else:
-        # Handle error
-        error_code = result.get("error_code", "INTERNAL_ERROR")
-        error_message = result.get("error_message", "Unknown error")
-        
-        REQUEST_COUNT.labels('gemini-proxy', 'error').inc()
-        
-        # Determine HTTP status code
-        status_code = 400 if error_code == "VALIDATION_ERROR" else 500
-        
-        return api_response(
-            False,
-            errors=[{"code": error_code, "message": error_message}],
-            status=status_code
-        )
 
 @app.route('/metrics')
 def metrics():
