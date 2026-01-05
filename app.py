@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 
 from utils.validator import validate_countries, UNKNOWN_COUNTRY_CODE
-from utils.gemini_detector import GeminiDetector 
+from utils.gemini_detector import GeminiDetector
+from utils.gemini_detector_service import GeminiDetectorService 
 
 # --- Configuration & Logging Setup ---
 load_dotenv()
@@ -124,36 +125,112 @@ def health_check():
 @require_api_key
 @REQUEST_LATENCY.time()
 def detect_country():
+    """
+    Detect country of origin and product attributes from description.
+    
+    Request body:
+    {
+        "description": "Product description text",
+        "model": "gemini-2.0-flash",  // optional, defaults to gemini-2.0-flash
+        "api_key": "your-gemini-api-key"  // optional, uses server's key if not provided
+    }
+    
+    Note: If providing custom model, you must also provide custom api_key, and vice versa.
+    """
     start_time = time.time()
     data = request.get_json() or {}
+    
+    # Extract parameters
     text = data.get("description", "").strip()
-
+    custom_model = data.get("model")
+    custom_api_key = data.get("api_key")
+    
+    # Validate description
     if not text:
+        REQUEST_COUNT.labels('detect-country', 'error').inc()
         return api_response(False, errors=[{"code": "VALIDATION_ERROR", "message": "Missing description"}], status=400)
-
+    
+    # Validate custom params (model + api_key must be provided together)
+    config_result = GeminiDetectorService.prepare_detector_config(
+        model_name=custom_model,
+        api_key=custom_api_key,
+        fallback_api_key=os.getenv('GEMINI_API_KEY')
+    )
+    
+    if not config_result["success"]:
+        REQUEST_COUNT.labels('detect-country', 'error').inc()
+        logger.warning(f"Validation failed: {config_result.get('error_message')}")
+        return api_response(
+            False, 
+            errors=[{
+                "code": config_result.get("error_code"),
+                "message": config_result.get("error_message")
+            }], 
+            status=400
+        )
+    
+    final_model = config_result["model"]
+    final_api_key = config_result["api_key"]
+    is_custom = config_result["is_custom"]
+    
     # 1. Check Cache
     cached_data = result_cache.get(text)
     if cached_data:
         REQUEST_COUNT.labels('detect-country', 'success').inc()
-        # Pass empty dict for detector if cached, just needs validation logic
+        logger.info(f"Cache hit for: {text[:30]}...")
         return api_response(True, data=process_detection_result(text, cached_data, start_time, True))
 
-    # 2. Call AI
-    if not ai_detector:
-        return api_response(False, errors=[{"code": "INIT_ERROR", "message": "Detector not initialized"}], status=500)
-
+    # 2. Create detector with appropriate config
     try:
-        logger.info(f"Processing AI (Gemini) for: {text[:50]}...")
-        ai_result = asyncio.run(ai_detector.detect_country(text))
+        # Create new detector instance with custom or default config
+        detector = GeminiDetector(api_key=final_api_key, model_name=final_model)
         
+        log_msg = f"Processing AI (Gemini) for: {text[:50]}... [Model: {final_model}, Custom: {is_custom}]"
+        logger.info(log_msg)
+        
+        ai_result = asyncio.run(detector.detect_country(text))
+        
+        # Handle AI errors
         if "error" in ai_result:
-            status_code = 503 if ai_result.get("error_code") in ["QUOTA_ERROR", "API_ERROR"] else 500
-            return api_response(False, errors=[{"code": ai_result.get("error_code"), "message": ai_result.get("error")}], status=status_code)
+            error_code = ai_result.get("error_code", "INTERNAL_ERROR")
+            error_message = ai_result.get("error")
+            
+            # Determine status code based on error type
+            status_code = 503 if error_code in ["QUOTA_ERROR", "API_ERROR"] else 500
+            
+            REQUEST_COUNT.labels('detect-country', 'error').inc()
+            logger.error(f"AI Error [{error_code}]: {error_message}")
+            
+            return api_response(
+                False, 
+                errors=[{
+                    "code": error_code, 
+                    "message": error_message
+                }], 
+                status=status_code
+            )
             
         processed_data = process_detection_result(text, ai_result, start_time, False)
+        processed_data["model"] = final_model
+        processed_data["is_custom"] = is_custom
+        
         REQUEST_COUNT.labels('detect-country', 'success').inc()
+        logger.info(f"Request completed successfully in {processed_data['time']}ms")
         return api_response(True, data=processed_data)
 
+    except ValueError as e:
+        # Handle initialization errors (invalid API key format, etc.)
+        REQUEST_COUNT.labels('detect-country', 'error').inc()
+        logger.error(f"Detector initialization error: {str(e)}")
+        return api_response(
+            False, 
+            errors=[{
+                "code": "INIT_ERROR", 
+                "message": f"Failed to initialize detector: {str(e)}"
+            }], 
+            status=400
+        )
+    
     except Exception as e:
         logger.error(f"Endpoint error: {traceback.format_exc()}")
         REQUEST_COUNT.labels('detect-country', 'error').inc()
@@ -163,17 +240,66 @@ def detect_country():
 @require_api_key
 @REQUEST_LATENCY.time()
 def batch_detect():
+    """
+    Batch detect countries and attributes from multiple product descriptions.
+    
+    Request body:
+    {
+        "descriptions": ["desc1", "desc2", ...],
+        "model": "gemini-2.0-flash",  // optional, defaults to gemini-2.0-flash
+        "api_key": "your-gemini-api-key"  // optional, uses server's key if not provided
+    }
+    
+    Note: If providing custom model, you must also provide custom api_key, and vice versa.
+    """
     start_time = time.time()
     data = request.get_json() or {}
+    
+    # Extract parameters
     descriptions = data.get("descriptions", [])
+    custom_model = data.get("model")
+    custom_api_key = data.get("api_key")
 
+    # Validate descriptions
     if not descriptions or not isinstance(descriptions, list):
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
         return api_response(False, errors=[{"code": "VALIDATION_ERROR", "message": "Invalid descriptions list"}], status=400)
+    
+    # Validate custom params (model + api_key must be provided together)
+    config_result = GeminiDetectorService.prepare_detector_config(
+        model_name=custom_model,
+        api_key=custom_api_key,
+        fallback_api_key=os.getenv('GEMINI_API_KEY')
+    )
+    
+    if not config_result["success"]:
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
+        logger.warning(f"Validation failed: {config_result.get('error_message')}")
+        return api_response(
+            False, 
+            errors=[{
+                "code": config_result.get("error_code"),
+                "message": config_result.get("error_message")
+            }], 
+            status=400
+        )
+    
+    final_model = config_result["model"]
+    final_api_key = config_result["api_key"]
+    is_custom = config_result["is_custom"]
 
     async def _run_batch():
+        """Inner async function to process batch requests."""
         tasks = []
         indices_needing_ai = []
         results = [None] * len(descriptions)
+        
+        # Create detector instance for batch processing
+        try:
+            detector = GeminiDetector(api_key=final_api_key, model_name=final_model)
+        except ValueError as e:
+            logger.error(f"Detector initialization error in batch: {str(e)}")
+            raise
         
         for i, desc in enumerate(descriptions):
             text = desc.strip()
@@ -181,18 +307,29 @@ def batch_detect():
             if cached:
                 results[i] = {"attributes": cached['attributes'], "cache": True}
             else:
-                if ai_detector:
-                    tasks.append(ai_detector.detect_country(text))
-                    indices_needing_ai.append(i)
-                else:
-                    default_res = ai_detector._get_default_result()['attributes'] if ai_detector else {}
-                    results[i] = {"attributes": default_res, "cache": False}
+                tasks.append(detector.detect_country(text))
+                indices_needing_ai.append(i)
 
         if tasks:
+            logger.info(f"Processing {len(tasks)} items with AI [Model: {final_model}, Custom: {is_custom}]")
             ai_outputs = await asyncio.gather(*tasks)
+            
             for idx, output in zip(indices_needing_ai, ai_outputs):
-                # Logic extracted to keep simple, similar to single detect
-                attributes = output.get('attributes') or ai_detector._get_default_result()['attributes']
+                # Check for errors in AI output
+                if "error" in output:
+                    results[idx] = {
+                        "attributes": detector._get_default_result()['attributes'],
+                        "cache": False,
+                        "error": {
+                            "code": output.get("error_code"),
+                            "message": output.get("error")
+                        }
+                    }
+                    logger.warning(f"AI error for item {idx}: {output.get('error')}")
+                    continue
+                
+                # Process successful result
+                attributes = output.get('attributes') or detector._get_default_result()['attributes']
                 raw_countries = attributes.get('country', {}).get('value', [UNKNOWN_COUNTRY_CODE])
                 attributes['country']['value'] = validate_countries(raw_countries)
                 
@@ -203,8 +340,7 @@ def batch_detect():
 
                 results[idx] = {
                     "attributes": attributes,
-                    "cache": False,
-                    "error": output.get("error")
+                    "cache": False
                 }
         
         return results, len(tasks)
@@ -213,18 +349,36 @@ def batch_detect():
         results, ai_calls = asyncio.run(_run_batch())
         processing_time = int((time.time() - start_time) * 1000)
         
-        data = {
+        response_data = {
             "results": results,
             "total": len(results),
             "cache_hits": len(descriptions) - ai_calls,
             "ai_calls": ai_calls,
+            "model": final_model,
+            "is_custom": is_custom,
             "time": processing_time
         }
+        
         REQUEST_COUNT.labels('batch-detect', 'success').inc()
-        return api_response(True, data=data)
+        logger.info(f"Batch request completed: {len(results)} items in {processing_time}ms")
+        return api_response(True, data=response_data)
+    
+    except ValueError as e:
+        # Handle initialization errors
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
+        logger.error(f"Detector initialization error in batch: {str(e)}")
+        return api_response(
+            False, 
+            errors=[{
+                "code": "INIT_ERROR", 
+                "message": f"Failed to initialize detector: {str(e)}"
+            }], 
+            status=400
+        )
 
     except Exception as e:
         logger.error(f"Batch error: {traceback.format_exc()}")
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
         return api_response(False, errors=[{"code": "INTERNAL_ERROR", "message": str(e)}], status=500)
 
 @app.route('/metrics')

@@ -5,4 +5,5 @@ openai
 google-generativeai
 langdetect
 prometheus-client
-gunicorn  
+gunicorn
+requests  

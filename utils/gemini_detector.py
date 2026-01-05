@@ -45,22 +45,25 @@ DEFAULT_ATTRIBUTES = {
 }
 
 class GeminiDetector:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model_name: str = None):
         if not api_key:
             raise ValueError("GEMINI_API_KEY is required")
+        
+        # Use provided model_name or default
+        self.model_name = model_name or MODEL_NAME
         
         genai.configure(api_key=api_key)
         
         # Configure model with JSON enforcement
         self.model = genai.GenerativeModel(
-            model_name=MODEL_NAME,
+            model_name=self.model_name,
             system_instruction=SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
                 "temperature": 0.0
             }
         )
-        print(f"✓ Using Google Gemini model: {MODEL_NAME}")
+        logging.info(f"✓ Using Google Gemini model: {self.model_name}")
 
     def _clean_text(self, text: str) -> str:
         """Remove HTML tags and irrelevant characters to save tokens."""
@@ -112,13 +115,45 @@ class GeminiDetector:
         except Unauthenticated:
             return self._get_default_result("Invalid Gemini API Key.", "AUTH_ERROR")
         except GoogleAPIError as e:
-            print(f"[ERROR] Gemini API Error: {e}")
+            logging.error(f"Gemini API Error: {e}")
             return self._get_default_result(f"API Error: {str(e)}", "API_ERROR")
         except Exception as e:
-            print(f"[ERROR] Unexpected: {e}")
-            traceback.print_exc()
+            logging.error(f"Unexpected error: {e}", exc_info=True)
             # Fallback to regex if AI fails completely
             return self._heuristic_fallback(text)
+
+    def _sanitize_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Clean newlines, extra whitespace, and special characters from attribute values.
+        Ensures clean JSON responses without formatting artifacts.
+        """
+        sanitized = {}
+        
+        for attr_name, attr_data in attributes.items():
+            if not isinstance(attr_data, dict):
+                sanitized[attr_name] = attr_data
+                continue
+            
+            sanitized_data = {}
+            for key, value in attr_data.items():
+                if key in ['value', 'evidence'] and isinstance(value, str):
+                    # Remove newlines and normalize whitespace
+                    cleaned = value.replace('\n', ' ').replace('\r', ' ')
+                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                    sanitized_data[key] = cleaned
+                elif key == 'value' and isinstance(value, list):
+                    # Clean list values
+                    sanitized_data[key] = [
+                        v.replace('\n', ' ').replace('\r', ' ').strip() 
+                        if isinstance(v, str) else v 
+                        for v in value
+                    ]
+                else:
+                    sanitized_data[key] = value
+            
+            sanitized[attr_name] = sanitized_data
+        
+        return sanitized
 
     def _parse_json_response(self, raw_text: str) -> Dict[str, Any]:
         """Parse JSON and ensure structure."""
@@ -131,10 +166,13 @@ class GeminiDetector:
             if isinstance(country_attr.get('value'), str):
                 country_attr['value'] = [country_attr['value']]
                 attributes['country'] = country_attr
+            
+            # Sanitize all attributes to remove newlines and extra whitespace
+            attributes = self._sanitize_attributes(attributes)
                 
             return {"attributes": attributes}
         except json.JSONDecodeError:
-             print("[DEBUG] JSON decode failed despite strict mode.")
+             logging.warning("JSON decode failed despite strict mode")
              return self._get_default_result("JSON Parse Error", "INTERNAL_ERROR")
 
     def _heuristic_fallback(self, text: str) -> Dict[str, Any]:
