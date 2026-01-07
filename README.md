@@ -169,74 +169,16 @@ pip install gunicorn
 gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 30 --log-level info app:app
 ```
 
-#### 🔹 Cách 3: Docker (Khuyến nghị)
-
-**Development Mode (với hot-reload):**
+#### 🔹 Cách 3: Docker Compose (Khuyến nghị)
 
 ```bash
-# Windows
-deploy-dev.bat
-
-# Linux/Mac
-chmod +x deploy-dev.sh
-./deploy-dev.sh
+docker-compose up --build        # Build & run
+docker-compose up -d --build     # Run background
+docker-compose logs -f           # Xem logs
+docker-compose down              # Dừng
 ```
 
-Hoặc manual:
-
-```bash
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
-```
-
-**Production Mode (cho server dev/production):**
-
-```bash
-# Windows
-deploy-prod.bat
-
-# Linux/Mac
-chmod +x deploy-prod.sh
-./deploy-prod.sh
-```
-
-Hoặc manual:
-
-```bash
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
-
-**Thay đổi port khi deploy:**
-
-Chỉnh sửa file `.env`:
-
-```bash
-PORT=5000         # Container internal port
-HOST_PORT=8080    # Host machine port (đổi theo nhu cầu)
-```
-
-Sau đó deploy lại:
-
-```bash
-docker-compose down
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-```
-
-**Các lệnh hữu ích:**
-
-```bash
-# Xem logs
-docker-compose logs -f app
-
-# Stop containers
-docker-compose down
-
-# Rebuild và restart
-docker-compose up -d --build
-```
-
-> 📖 **Chi tiết hơn**: Xem file [DEPLOYMENT.md](./DEPLOYMENT.md) để biết hướng dẫn deploy chi tiết, troubleshooting, và các use case phức tạp hơn.
-
-Ứng dụng chạy tại: http://localhost:5000 (hoặc port bạn đã cấu hình)
+Ứng dụng chạy tại: http://localhost:5000
 
 ### 🧠 Sử dụng API
 

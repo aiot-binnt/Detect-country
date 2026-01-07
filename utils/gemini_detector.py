@@ -1,13 +1,15 @@
 import re
 import json
+import os
 import traceback
 import logging
-import google.generativeai as genai
-from google.api_core.exceptions import GoogleAPIError, ResourceExhausted, Unauthenticated
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from google.cloud import aiplatform
+from vertexai.generative_models import GenerativeModel, GenerationConfig
+import vertexai
 
 # Constants
-MODEL_NAME = "gemini-2.0-flash" 
+MODEL_NAME = "gemini-2.0-flash-exp" 
 MAX_TEXT_LENGTH = 1000
 
 # Prompt 
@@ -45,25 +47,46 @@ DEFAULT_ATTRIBUTES = {
 }
 
 class GeminiDetector:
-    def __init__(self, api_key: str, model_name: str = None):
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY is required")
+    def __init__(self, model_name: Optional[str] = None):
+        """
+        Initialize Gemini Detector with Vertex AI using service account authentication.
         
-        # Use provided model_name or default
+        Args:
+            model_name: Optional model name (defaults to MODEL_NAME)
+        
+        Raises:
+            ValueError: If GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CLOUD_PROJECT is not set
+        """
         self.model_name = model_name or MODEL_NAME
         
-        genai.configure(api_key=api_key)
+        # Check if service account credentials are available
+        service_account_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        project_id = os.getenv('GOOGLE_CLOUD_PROJECT')
+        location = os.getenv('GCP_LOCATION', 'us-central1')
         
-        # Configure model with JSON enforcement
-        self.model = genai.GenerativeModel(
-            model_name=self.model_name,
-            system_instruction=SYSTEM_PROMPT,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.0
-            }
-        )
-        logging.info(f"✓ Using Google Gemini model: {self.model_name}")
+        if not service_account_path:
+            raise ValueError(
+                "GOOGLE_APPLICATION_CREDENTIALS environment variable is required. "
+                "Please set it to the path of your service account JSON file."
+            )
+        
+        if not project_id:
+            raise ValueError(
+                "GOOGLE_CLOUD_PROJECT environment variable is required. "
+                "Please set it to your GCP project ID."
+            )
+        
+        # Initialize Vertex AI with service account
+        try:
+            vertexai.init(project=project_id, location=location)
+            self.model = GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=SYSTEM_PROMPT
+            )
+            logging.info(f"✓ Using Vertex AI with Service Account: {self.model_name} (Project: {project_id}, Location: {location})")
+        except Exception as e:
+            logging.error(f"Failed to initialize Vertex AI with service account: {e}")
+            raise ValueError(f"Vertex AI initialization failed: {e}")
 
     def _clean_text(self, text: str) -> str:
         """Remove HTML tags and irrelevant characters to save tokens."""
@@ -102,25 +125,34 @@ class GeminiDetector:
         try:
             truncated_text = cleaned_text[:MAX_TEXT_LENGTH] + "..." if len(cleaned_text) > MAX_TEXT_LENGTH else cleaned_text
             
-            # Gemini Async Call (Updated user prompt to Japanese)
+            # Vertex AI Async Call
+            generation_config = GenerationConfig(
+                temperature=0.0,
+                response_mime_type="application/json"
+            )
+            
             response = await self.model.generate_content_async(
-                f"この商品説明を分析し、構造化JSONを返却してください。\n\n商品説明:\n{truncated_text}"
+                f"この商品説明を分析し、構造化JSONを返却してください。\n\n商品説明:\n{truncated_text}",
+                generation_config=generation_config
             )
             
             raw_content = response.text.strip()
             return self._parse_json_response(raw_content)
 
-        except ResourceExhausted:
-            return self._get_default_result("Gemini quota exceeded.", "QUOTA_ERROR")
-        except Unauthenticated:
-            return self._get_default_result("Invalid Gemini API Key.", "AUTH_ERROR")
-        except GoogleAPIError as e:
-            logging.error(f"Gemini API Error: {e}")
-            return self._get_default_result(f"API Error: {str(e)}", "API_ERROR")
         except Exception as e:
-            logging.error(f"Unexpected error: {e}", exc_info=True)
-            # Fallback to regex if AI fails completely
-            return self._heuristic_fallback(text)
+            error_str = str(e).lower()
+            
+            # Handle specific Vertex AI errors
+            if "quota" in error_str or "resource exhausted" in error_str:
+                return self._get_default_result("Vertex AI quota exceeded.", "QUOTA_ERROR")
+            elif "permission" in error_str or "unauthorized" in error_str or "unauthenticated" in error_str:
+                return self._get_default_result("Invalid credentials or insufficient permissions.", "AUTH_ERROR")
+            elif "not found" in error_str:
+                return self._get_default_result(f"Model '{self.model_name}' not found or not available.", "MODEL_ERROR")
+            else:
+                logging.error(f"Vertex AI Error: {e}", exc_info=True)
+                # Fallback to regex if AI fails completely
+                return self._heuristic_fallback(text)
 
     def _sanitize_attributes(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
         """

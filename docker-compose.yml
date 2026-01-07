@@ -5,18 +5,31 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        PORT: ${PORT:-5000}
     ports:
-      - "${HOST_PORT:-5000}:${PORT:-5000}"
+      - "5000:5000"
     env_file:
-      - .env
+      - .env  # Loads environment variables
     environment:
-      - PORT=${PORT:-5000}
+      # Vertex AI Configuration (override .env if needed)
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gen-lang-client-0682316968-81bcaa1a8ef9.json
+      - GOOGLE_CLOUD_PROJECT=gen-lang-client-0682316968
+      - GCP_LOCATION=us-central1
+    volumes:
+      # Mount service account JSON (read-only for security)
+      - ./gen-lang-client-0682316968-81bcaa1a8ef9.json:/app/gen-lang-client-0682316968-81bcaa1a8ef9.json:ro
+      - .:/app  # For development: hot-reload code changes (optional; remove for production)
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-5000}/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 3s
       retries: 3
-      start_period: 10s
-    restart: unless-stopped
+      start_period: 5s
+    restart: unless-stopped  # Auto-restart on failure (optional)
+
+# Optional: Add a service for Prometheus if needed
+# prometheus:
+#   image: prom/prometheus
+#   ports:
+#     - "9090:9090"
+#   volumes:
+#     - ./prometheus.yml:/etc/prometheus/prometheus.yml

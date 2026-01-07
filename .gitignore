@@ -26,3 +26,7 @@ venv/
 # System files
 .DS_Store
 Thumbs.db
+
+# Service Account Credentials (NEVER commit!)
+gen-lang-client-0682316968-81bcaa1a8ef9.json
+*-service-account.json

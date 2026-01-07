@@ -65,8 +65,8 @@ result_cache = LRUCache(max_size=1000)
 
 # Initialize Gemini Detector
 try:
-    # Using GeminiDetector with new Env Var
-    ai_detector = GeminiDetector(api_key=os.getenv('GEMINI_API_KEY'))
+    # Using GeminiDetector with Vertex AI Service Account
+    ai_detector = GeminiDetector()
 except ValueError as e:
     logger.error(f"Failed to initialize Gemini Detector: {e}")
     ai_detector = None
@@ -131,47 +131,46 @@ def detect_country():
     Request body:
     {
         "description": "Product description text",
-        "model": "gemini-2.0-flash",  // optional, defaults to gemini-2.0-flash
-        "api_key": "your-gemini-api-key"  // optional, uses server's key if not provided
+        "model": "gemini-2.0-flash"  // optional, defaults to gemini-2.0-flash-exp
     }
     
-    Note: If providing custom model, you must also provide custom api_key, and vice versa.
+    Note: Always uses Vertex AI with service account authentication.
     """
     start_time = time.time()
     data = request.get_json() or {}
     
     # Extract parameters
     text = data.get("description", "").strip()
-    custom_model = data.get("model")
-    custom_api_key = data.get("api_key")
+    custom_model = data.get("model")  # Optional model override
     
     # Validate description
     if not text:
         REQUEST_COUNT.labels('detect-country', 'error').inc()
         return api_response(False, errors=[{"code": "VALIDATION_ERROR", "message": "Missing description"}], status=400)
     
-    # Validate custom params (model + api_key must be provided together)
-    config_result = GeminiDetectorService.prepare_detector_config(
-        model_name=custom_model,
-        api_key=custom_api_key,
-        fallback_api_key=os.getenv('GEMINI_API_KEY')
-    )
-    
-    if not config_result["success"]:
+    # Reject empty model string (if you don't want to override, don't send the parameter)
+    if custom_model is not None and not custom_model.strip():
         REQUEST_COUNT.labels('detect-country', 'error').inc()
-        logger.warning(f"Validation failed: {config_result.get('error_message')}")
         return api_response(
             False, 
             errors=[{
-                "code": config_result.get("error_code"),
-                "message": config_result.get("error_message")
+                "code": "VALIDATION_ERROR", 
+                "message": "Parameter 'model' cannot be empty. Either provide a valid model name or omit the parameter to use the default model."
             }], 
             status=400
         )
     
-    final_model = config_result["model"]
-    final_api_key = config_result["api_key"]
-    is_custom = config_result["is_custom"]
+    # Reject api_key parameter (no longer supported)
+    if "api_key" in data:
+        REQUEST_COUNT.labels('detect-country', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": "Parameter 'api_key' is not supported. This API uses Vertex AI with service account authentication. Only 'description' and optional 'model' parameters are accepted."
+            }], 
+            status=400
+        )
     
     # 1. Check Cache
     cached_data = result_cache.get(text)
@@ -180,12 +179,14 @@ def detect_country():
         logger.info(f"Cache hit for: {text[:30]}...")
         return api_response(True, data=process_detection_result(text, cached_data, start_time, True))
 
-    # 2. Create detector with appropriate config
+    # 2. Create detector with service account (optional model override)
+
+    # 3. Create detector with service account (optional model override)
     try:
-        # Create new detector instance with custom or default config
-        detector = GeminiDetector(api_key=final_api_key, model_name=final_model)
+        # Create detector instance with optional model override
+        detector = GeminiDetector(model_name=custom_model)
         
-        log_msg = f"Processing AI (Gemini) for: {text[:50]}... [Model: {final_model}, Custom: {is_custom}]"
+        log_msg = f"Processing with Vertex AI: {text[:50]}... [Model: {detector.model_name}]"
         logger.info(log_msg)
         
         ai_result = asyncio.run(detector.detect_country(text))
@@ -211,8 +212,7 @@ def detect_country():
             )
             
         processed_data = process_detection_result(text, ai_result, start_time, False)
-        processed_data["model"] = final_model
-        processed_data["is_custom"] = is_custom
+        processed_data["model"] = detector.model_name
         
         REQUEST_COUNT.labels('detect-country', 'success').inc()
         logger.info(f"Request completed successfully in {processed_data['time']}ms")
@@ -246,47 +246,61 @@ def batch_detect():
     Request body:
     {
         "descriptions": ["desc1", "desc2", ...],
-        "model": "gemini-2.0-flash",  // optional, defaults to gemini-2.0-flash
-        "api_key": "your-gemini-api-key"  // optional, uses server's key if not provided
+        "model": "gemini-2.0-flash"  // optional, defaults to gemini-2.0-flash-exp
     }
     
-    Note: If providing custom model, you must also provide custom api_key, and vice versa.
+    Note: Always uses Vertex AI with service account authentication.
     """
     start_time = time.time()
     data = request.get_json() or {}
     
     # Extract parameters
     descriptions = data.get("descriptions", [])
-    custom_model = data.get("model")
-    custom_api_key = data.get("api_key")
+    custom_model = data.get("model")  # Optional model override
 
     # Validate descriptions
     if not descriptions or not isinstance(descriptions, list):
         REQUEST_COUNT.labels('batch-detect', 'error').inc()
         return api_response(False, errors=[{"code": "VALIDATION_ERROR", "message": "Invalid descriptions list"}], status=400)
     
-    # Validate custom params (model + api_key must be provided together)
-    config_result = GeminiDetectorService.prepare_detector_config(
-        model_name=custom_model,
-        api_key=custom_api_key,
-        fallback_api_key=os.getenv('GEMINI_API_KEY')
-    )
-    
-    if not config_result["success"]:
+    # Validate descriptions is not empty and contains valid items
+    if len(descriptions) == 0:
         REQUEST_COUNT.labels('batch-detect', 'error').inc()
-        logger.warning(f"Validation failed: {config_result.get('error_message')}")
+        return api_response(False, errors=[{"code": "VALIDATION_ERROR", "message": "Descriptions list cannot be empty"}], status=400)
+    
+    # Check if any description is not a string
+    for idx, desc in enumerate(descriptions):
+        if not isinstance(desc, str):
+            REQUEST_COUNT.labels('batch-detect', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{"code": "VALIDATION_ERROR", "message": f"Description at index {idx} must be a string"}], 
+                status=400
+            )
+    
+    # Reject empty model string (if you don't want to override, don't send the parameter)
+    if custom_model is not None and not custom_model.strip():
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
         return api_response(
             False, 
             errors=[{
-                "code": config_result.get("error_code"),
-                "message": config_result.get("error_message")
+                "code": "VALIDATION_ERROR", 
+                "message": "Parameter 'model' cannot be empty. Either provide a valid model name or omit the parameter to use the default model."
             }], 
             status=400
         )
     
-    final_model = config_result["model"]
-    final_api_key = config_result["api_key"]
-    is_custom = config_result["is_custom"]
+    # Reject api_key parameter (no longer supported)
+    if "api_key" in data:
+        REQUEST_COUNT.labels('batch-detect', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": "Parameter 'api_key' is not supported. This API uses Vertex AI with service account authentication. Only 'descriptions' and optional 'model' parameters are accepted."
+            }], 
+            status=400
+        )
 
     async def _run_batch():
         """Inner async function to process batch requests."""
@@ -296,7 +310,7 @@ def batch_detect():
         
         # Create detector instance for batch processing
         try:
-            detector = GeminiDetector(api_key=final_api_key, model_name=final_model)
+            detector = GeminiDetector(model_name=custom_model)
         except ValueError as e:
             logger.error(f"Detector initialization error in batch: {str(e)}")
             raise
@@ -311,7 +325,7 @@ def batch_detect():
                 indices_needing_ai.append(i)
 
         if tasks:
-            logger.info(f"Processing {len(tasks)} items with AI [Model: {final_model}, Custom: {is_custom}]")
+            logger.info(f"Processing {len(tasks)} items with Vertex AI [Model: {detector.model_name}]")
             ai_outputs = await asyncio.gather(*tasks)
             
             for idx, output in zip(indices_needing_ai, ai_outputs):
@@ -343,10 +357,10 @@ def batch_detect():
                     "cache": False
                 }
         
-        return results, len(tasks)
+        return results, len(tasks), detector.model_name  # Return model_name as well
 
     try:
-        results, ai_calls = asyncio.run(_run_batch())
+        results, ai_calls, model_name = asyncio.run(_run_batch())  # Unpack model_name
         processing_time = int((time.time() - start_time) * 1000)
         
         response_data = {
@@ -354,8 +368,7 @@ def batch_detect():
             "total": len(results),
             "cache_hits": len(descriptions) - ai_calls,
             "ai_calls": ai_calls,
-            "model": final_model,
-            "is_custom": is_custom,
+            "model": model_name,  # Use returned model_name
             "time": processing_time
         }
         
