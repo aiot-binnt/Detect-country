@@ -121,6 +121,24 @@ def process_detection_result(text: str, ai_result: Dict, start_time: float, is_c
 def health_check():
     return jsonify({"status": "healthy", "service": "Gemini Country Detector", "version": "2.0.0"})
 
+@app.route('/clear-cache', methods=['POST'])
+@require_api_key
+def clear_cache():
+    """
+    Clear all cached results.
+    
+    Returns:
+        JSON with number of items cleared
+    """
+    items_count = len(result_cache.cache)
+    result_cache.cache.clear()
+    logger.info(f"Cache cleared: {items_count} items removed")
+    return jsonify({
+        "result": "OK",
+        "message": "Cache cleared successfully",
+        "items_cleared": items_count
+    })
+
 @app.route('/detect-country', methods=['POST'])
 @require_api_key
 @REQUEST_LATENCY.time()

@@ -15,7 +15,7 @@ MAX_TEXT_LENGTH = 1000
 # Prompt 
 SYSTEM_PROMPT = """
 あなたは商品説明の製造国・属性検出の専門家です。
-以下のルールに従って、商品説明から「製造国 (Country of Origin)」、「サイズ (Size)」、「素材 (Material)」を抽出してください。
+以下のルールに従って、商品説明から「製造国 (Country of Origin)」、「サイズ (Size)」、「素材 (Material)」、「対象ユーザー (Target User)」を抽出してください。
 
 【重要ルール】
 1. 製造国・原産国に焦点を当ててください。配送先やブランドの所在地から推測しないでください。
@@ -27,7 +27,8 @@ SYSTEM_PROMPT = """
   "attributes": {
     "country": {"value": ["XX"], "evidence": "抽出した根拠テキスト", "confidence": 0.0},
     "size": {"value": "抽出値", "evidence": "抽出した根拠テキスト", "confidence": 0.0},
-    "material": {"value": "抽出値", "evidence": "抽出した根拠テキスト", "confidence": 0.0}
+    "material": {"value": "抽出値", "evidence": "抽出した根拠テキスト", "confidence": 0.0},
+    "target_user": {"value": ["抽出値1", "抽出値2"], "evidence": "抽出した根拠テキスト", "confidence": 0.0}
   }
 }
 
@@ -38,12 +39,18 @@ SYSTEM_PROMPT = """
    - 複数の国が記載されている場合はリストで返してください (例: ["ID", "VN"])。
 2. **Size (サイズ) & Material (素材)**: 
    - 見つからない場合は、value を "none" としてください。
+3. **Target User (対象ユーザー)**:
+   - 商品の対象者/使用者を特定してください。
+   - 値は以下から選択: "children", "adult", "men", "women", "senior", "baby", "unisex"
+   - 複数の対象者がある場合はリストで返してください（例: ["women", "men"]）。
+   - 見つからない場合は、value を ["none"] としてください。
 """
 
 DEFAULT_ATTRIBUTES = {
     "country": {"value": ["ZZ"], "evidence": "none", "confidence": 0.0},
     "size": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "material": {"value": "none", "evidence": "none", "confidence": 0.0}
+    "material": {"value": "none", "evidence": "none", "confidence": 0.0},
+    "target_user": {"value": ["none"], "evidence": "none", "confidence": 0.0}
 }
 
 class GeminiDetector:
@@ -199,6 +206,12 @@ class GeminiDetector:
                 country_attr['value'] = [country_attr['value']]
                 attributes['country'] = country_attr
             
+            # Normalize target_user value to list if it's a string
+            target_user_attr = attributes.get('target_user', {})
+            if isinstance(target_user_attr.get('value'), str):
+                target_user_attr['value'] = [target_user_attr['value']]
+                attributes['target_user'] = target_user_attr
+            
             # Sanitize all attributes to remove newlines and extra whitespace
             attributes = self._sanitize_attributes(attributes)
                 
@@ -234,5 +247,37 @@ class GeminiDetector:
         if mat_match:
              val = mat_match.group(2) if len(mat_match.groups()) > 1 else mat_match.group(1)
              attributes["material"] = {"value": val.strip(), "evidence": mat_match.group(0).strip(), "confidence": 0.3}
+
+        # Target User - collect all matches
+        target_patterns = [
+            (r'((?:for|向け|対象)[\s:]*((?:kids?|children|baby|infant|toddler|キッズ|子供|こども|ベビー|赤ちゃん|幼児)))', 'children'),
+            (r'((?:for|向け|対象)[\s:]*((?:adult|大人|おとな|成人)))', 'adult'),
+            (r'((?:for|向け|対象)[\s:]*((?:men|male|メンズ|男性|紳士)))', 'men'),
+            (r'((?:for|向け|対象)[\s:]*((?:women|ladies|female|レディース|女性|婦人)))', 'women'),
+            (r'((?:for|向け|対象)[\s:]*((?:senior|elderly|シニア|高齢者|お年寄り)))', 'senior'),
+            (r'((?:for|向け|対象)[\s:]*((?:unisex|ユニセックス|男女兼用)))', 'unisex'),
+            # Direct mentions without prefix
+            (r'(キッズ|子供用|子ども用)', 'children'),
+            (r'(ベビー用|赤ちゃん用|乳児用)', 'baby'),
+            (r'(メンズ|男性用|紳士用)', 'men'),
+            (r'(レディース|女性用|婦人用)', 'women'),
+            (r'(シニア|高齢者用)', 'senior'),
+        ]
+        
+        found_users = []
+        evidence_list = []
+        
+        for pattern, user_type in target_patterns:
+            target_match = re.search(pattern, text, re.IGNORECASE)
+            if target_match and user_type not in found_users:
+                found_users.append(user_type)
+                evidence_list.append(target_match.group(0).strip())
+        
+        if found_users:
+            attributes["target_user"] = {
+                "value": found_users, 
+                "evidence": " ".join(evidence_list), 
+                "confidence": 0.3
+            }
 
         return {"attributes": attributes}
