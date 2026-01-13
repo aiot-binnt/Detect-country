@@ -65,10 +65,10 @@ def validate_country_code(code: str) -> str:
 def validate_countries(codes: List[str]) -> List[str]:
     """
     Validate a list of country codes.
-    Returns a list of unique valid alpha-3 codes or ["ZZZ"] if none valid.
+    Returns a list of unique valid alpha-3 codes or [] if none valid.
     """
     if not codes:
-        return [UNKNOWN_COUNTRY_CODE]
+        return []
     
     validated = []
     for code in codes:
@@ -79,4 +79,4 @@ def validate_countries(codes: List[str]) -> List[str]:
     # Remove duplicates while preserving order using OrderedDict
     unique_codes = list(OrderedDict.fromkeys(validated))
     
-    return unique_codes if unique_codes else [UNKNOWN_COUNTRY_CODE]
+    return unique_codes if unique_codes else []

@@ -35,7 +35,7 @@ SYSTEM_PROMPT = """
 【抽出ルール】
 1. **Country (国)**: 
    - ISO 3166-1 alpha-2 コードに正規化してください (例: Japan -> "JP", China -> "CN", Vietnam -> "VN")。
-   - 見つからない場合は、value を ["ZZ"] としてください。
+   - 見つからない場合は、value を [] (空の配列) としてください。
    - 複数の国が記載されている場合はリストで返してください (例: ["ID", "VN"])。
 2. **Size (サイズ) & Material (素材)**: 
    - 見つからない場合は、value を "none" としてください。
@@ -43,14 +43,14 @@ SYSTEM_PROMPT = """
    - 商品の対象者/使用者を特定してください。
    - 値は以下から選択: "children", "adult", "men", "women", "senior", "baby", "unisex"
    - 複数の対象者がある場合はリストで返してください（例: ["women", "men"]）。
-   - 見つからない場合は、value を ["none"] としてください。
+   - 見つからない場合は、value を [] (空の配列) としてください。
 """
 
 DEFAULT_ATTRIBUTES = {
-    "country": {"value": ["ZZ"], "evidence": "none", "confidence": 0.0},
+    "country": {"value": [], "evidence": "none", "confidence": 0.0},
     "size": {"value": "none", "evidence": "none", "confidence": 0.0},
     "material": {"value": "none", "evidence": "none", "confidence": 0.0},
-    "target_user": {"value": ["none"], "evidence": "none", "confidence": 0.0}
+    "target_user": {"value": [], "evidence": "none", "confidence": 0.0}
 }
 
 class GeminiDetector:

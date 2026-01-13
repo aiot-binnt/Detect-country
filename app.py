@@ -100,7 +100,7 @@ def process_detection_result(text: str, ai_result: Dict, start_time: float, is_c
     attributes = ai_result.get('attributes') or default_attrs
     
     # Validation
-    raw_countries = attributes.get('country', {}).get('value', [UNKNOWN_COUNTRY_CODE])
+    raw_countries = attributes.get('country', {}).get('value', [])
     valid_countries = validate_countries(raw_countries)
     attributes['country']['value'] = valid_countries
     
@@ -362,7 +362,7 @@ def batch_detect():
                 
                 # Process successful result
                 attributes = output.get('attributes') or detector._get_default_result()['attributes']
-                raw_countries = attributes.get('country', {}).get('value', [UNKNOWN_COUNTRY_CODE])
+                raw_countries = attributes.get('country', {}).get('value', [])
                 attributes['country']['value'] = validate_countries(raw_countries)
                 
                 # Cache Update
