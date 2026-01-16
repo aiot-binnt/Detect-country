@@ -1,16 +1,20 @@
-# 🧠 AI Country Detector
+# 🧠 AI Product Detector with HS Code
 
-🚀 **AI Country Detector** là một hệ thống API dựa trên **Flask**, sử dụng mô hình **OpenAI GPT-4o-mini** để phát hiện **quốc gia sản xuất (country of origin)** từ mô tả sản phẩm.  
-API được thiết kế **bất đồng bộ (async)**, **chịu lỗi cao**, và có thể **trích xuất thuộc tính sản phẩm** như `size`, `color`, `material`, `brand` theo cấu trúc **JSON lồng nhau**.
+🚀 **AI Product Detector** là một hệ thống API dựa trên **Flask**, sử dụng mô hình **Google Gemini 2.0 Flash** (via Vertex AI) để phát hiện **thuộc tính sản phẩm** và **HS Code (Harmonized System Code)** từ mô tả sản phẩm.
+
+API được thiết kế **bất đồng bộ (async)**, **chịu lỗi cao**, và có thể trích xuất các thuộc tính như `country`, `size`, `material`, `target_user` và `hscode` theo cấu trúc **JSON**.
 
 ---
 
 ## 📋 Giới thiệu
 
-- **Mục đích**: Phân tích văn bản sản phẩm từ e-commerce để xác định nguồn gốc sản xuất chính xác (ví dụ: `"Made in Japan"` → `["JP"]`), tránh suy đoán từ brand hoặc địa chỉ.
-- **Phiên bản**: `1.4.1`
+- **Mục đích**: Phân tích văn bản sản phẩm từ e-commerce để:
+  - Xác định nguồn gốc sản xuất (Country of Origin)
+  - Trích xuất thuộc tính sản phẩm (Size, Material, Target User)
+  - Phân loại HS Code cho mục đích hải quan (theo Japan Post)
+- **Phiên bản**: `3.0.0`
 - **Ngôn ngữ chính**: Python 3.12+
-- **Dependencies**: Xem `requirements.txt`
+- **AI Model**: Google Gemini 2.0 Flash (Vertex AI)
 
 ---
 
@@ -18,19 +22,23 @@ API được thiết kế **bất đồng bộ (async)**, **chịu lỗi cao**, 
 
 ### 🗺️ Phát hiện quốc gia
 
-Trả về mảng mã **ISO 3166-1 alpha-2** (ví dụ: `["JP", "VN"]`) cùng bằng chứng (`evidence`) và độ tin cậy (`confidence`) 0.0–1.0.
+Trả về mảng mã **ISO 3166-1 alpha-3** (ví dụ: `["JPN", "VNM"]`) cùng bằng chứng (`evidence`) và độ tin cậy (`confidence`) 0.0–1.0.
+
+### 📦 Phân loại HS Code
+
+Xác định mã HS Code 6 chữ số dựa trên bảng phân loại của Japan Post.
 
 ### 🎨 Trích xuất thuộc tính
 
-Bao gồm `size`, `color`, `material`, `brand` — với cấu trúc JSON lồng nhau chi tiết (`value`, `evidence`, `confidence`).
+Bao gồm `size`, `material`, `target_user` — với cấu trúc JSON chi tiết (`value`, `evidence`, `confidence`).
 
 ### ⚡ Xử lý bất đồng bộ (Async)
 
-Tận dụng `asyncio` và `AsyncOpenAI (v1.x+)` để gọi API OpenAI, hỗ trợ batch song song (`asyncio.gather`) cho hiệu suất tối đa.
+Tận dụng `asyncio` và Vertex AI async để gọi API, hỗ trợ batch song song (`asyncio.gather`) cho hiệu suất tối đa.
 
 ### 🛡️ Xử lý lỗi chi tiết
 
-Tự động bắt các lỗi cụ thể từ OpenAI (`RateLimitError`, `AuthenticationError`, v.v.) và trả về mã lỗi JSON rõ ràng, không làm crash API.
+Tự động bắt các lỗi cụ thể và trả về mã lỗi JSON rõ ràng, không làm crash API.
 
 ### ⚙️ Tối ưu hóa
 
@@ -49,12 +57,13 @@ Tự động dùng heuristic **regex** nếu AI trả về JSON không hợp l�
 
 > Tất cả các endpoint (ngoại trừ `/health` và `/metrics`) yêu cầu header `X-API-KEY` để xác thực.
 
-| Method | Endpoint          | Yêu cầu X-API-KEY | Mô tả                           |
-| :----- | :---------------- | :---------------- | :------------------------------ |
-| POST   | `/detect-country` | ✅ Có             | Phân tích mô tả đơn lẻ          |
-| POST   | `/batch-detect`   | ✅ Có             | Phân tích hàng loạt (song song) |
-| GET    | `/health`         | ❌ Không          | Kiểm tra tình trạng API         |
-| GET    | `/metrics`        | ❌ Không          | Xuất Prometheus metrics         |
+| Method | Endpoint                | Yêu cầu X-API-KEY | Mô tả                                   |
+| :----- | :---------------------- | :---------------- | :-------------------------------------- |
+| POST   | `/detect-product`       | ✅ Có             | Phát hiện thuộc tính + HS Code (đơn lẻ) |
+| POST   | `/batch-detect-product` | ✅ Có             | Phát hiện hàng loạt (song song)         |
+| POST   | `/clear-cache`          | ✅ Có             | Xóa toàn bộ cache                       |
+| GET    | `/health`               | ❌ Không          | Kiểm tra tình trạng API                 |
+| GET    | `/metrics`              | ❌ Không          | Xuất Prometheus metrics                 |
 
 ---
 
@@ -63,7 +72,7 @@ Tự động dùng heuristic **regex** nếu AI trả về JSON không hợp l�
 - 🐍 Python 3.12+
 - 🧭 Git
 - 🐳 Docker & Docker Compose (nếu chạy container)
-- 🔑 Tài khoản OpenAI API để lấy `OPENAI_API_KEY`
+- 🔑 Google Cloud Service Account với quyền Vertex AI
 - 🔑 Biến `API_KEYS` trong `.env` để xác thực client
 
 ---
@@ -73,23 +82,18 @@ Tự động dùng heuristic **regex** nếu AI trả về JSON không hợp l�
 ### 1️⃣ Clone repository
 
 ```bash
-# Cách 1: Clone trực tiếp
-git clone https://aiot-inc.backlog.com/git/AIOT_AI_LAB/aal-product-information-extraction.git
-cd aal-product-information-extraction
-
-# Cách 2: Clone qua SSH
-git clone git@aiot-inc.backlog.com:AIOT_AI_LAB/aal-product-information-extraction.git
-cd aal-product-information-extraction
+git clone https://github.com/your-repo/ai-country-detector.git
+cd ai-country-detector
 ```
 
 Cấu trúc thư mục:
 
 ```bash
-aal-product-information-extraction/
+ai-country-detector/
 ├── app.py                  # Flask main file
 ├── requirements.txt
 ├── utils/
-│   ├── openai_detector.py  # Async logic
+│   ├── gemini_detector.py  # Gemini AI logic
 │   └── validator.py        # Country validation
 ├── Dockerfile
 ├── docker-compose.yml
@@ -102,19 +106,21 @@ aal-product-information-extraction/
 cp .env.example .env
 ```
 
-Ví dụ nội dung .env:
+Ví dụ nội dung `.env`:
 
 ```bash
-# OpenAI API Key (service)
-OPENAI_API_KEY="sk-..."
+# Vertex AI Configuration
+GOOGLE_CLOUD_PROJECT=your-project-id
+GCP_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 
-# API Keys (cho client, cách nhau bằng dấu phẩy)
-API_KEYS="key_client_1,key_client_2"
+# API Security
+API_KEYS=your-api-key-1,your-api-key-2
 
-# Config
-PORT=5000
+# Application Settings
 LOG_LEVEL=INFO
 FLASK_DEBUG=False
+PORT=5000
 ```
 
 ### 3️⃣ Cài dependencies
@@ -123,53 +129,25 @@ FLASK_DEBUG=False
 pip install -r requirements.txt
 ```
 
-### 🚀 Chạy ứng dụng
+---
 
-#### 🔹 Cách 1: Local Dev Mode (Flask)
+## 🚀 Chạy ứng dụng
+
+### 🔹 Local Dev Mode (Flask)
 
 ```bash
-export FLASK_APP=app.py
 python app.py
 ```
 
 Ứng dụng chạy tại: http://localhost:5000
 
-Test nhanh:
+### 🔹 Production-like (Gunicorn)
 
 ```bash
-curl -X POST http://localhost:5000/detect-country \
-  -H "Content-Type: application/json" \
-  -H "X-API-KEY: <your_api_key_in_env>" \
-  -d '{"description": "日本製、サイズM、赤いNikeシャツ"}'
+gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 30 app:app
 ```
 
-Kết quả mẫu:
-
-```bash
-{
-  "result": "OK",
-  "data": {
-    "attributes": {
-      "country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0},
-      "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0},
-      "color": {"value": "赤い", "evidence": "赤いNikeシャツ", "confidence": 0.8},
-      "material": {"value": "none", "evidence": "none", "confidence": 0.0},
-      "brand": {"value": "Nike", "evidence": "赤いNikeシャツ", "confidence": 0.9}
-    },
-    "cache": false,
-    "time": 250
-  }
-}
-```
-
-#### 🔹 Cách 2: Production-like (Gunicorn)
-
-```bash
-pip install gunicorn
-gunicorn --bind 0.0.0.0:5000 --workers 4 --timeout 30 --log-level info app:app
-```
-
-#### 🔹 Cách 3: Docker Compose (Khuyến nghị)
+### 🔹 Docker Compose (Khuyến nghị)
 
 ```bash
 docker-compose up --build        # Build & run
@@ -178,151 +156,189 @@ docker-compose logs -f           # Xem logs
 docker-compose down              # Dừng
 ```
 
-Ứng dụng chạy tại: http://localhost:5000
+---
 
-### 🧠 Sử dụng API
+## 🧠 Sử dụng API
 
-Tất cả request cần có header:
+### Headers yêu cầu
 
-```bash
+```
 Content-Type: application/json
 X-API-KEY: <your_api_key_in_env>
 ```
 
-#### 🔸 1. Single Detection /detect-country
+---
 
-**Request mặc định (sử dụng config của server):**
+### 🔸 1. Single Detection `/detect-product`
+
+**Request:**
 
 ```bash
-POST /detect-country
+POST /detect-product
+Content-Type: application/json
+X-API-KEY: your-api-key
+
 {
-  "description": "Mô tả sản phẩm"
+  "title": "レディース ストレートパンツ",
+  "description": "素材: ポリエステル95% ポリウレタン5%、サイズ: S/M/L",
+  "model": "gemini-2.5-flash"  // optional - custom model
 }
 ```
 
-**Request với custom model và api_key:**
+**Input Parameters:**
 
-```bash
-POST /detect-country
-{
-  "description": "日本製、サイズM、赤いNikeシャツ",
-  "model": "gemini-2.5-flash",
-  "api_key": "your-custom-gemini-api-key"
-}
-```
+| Parameter     | Type   | Required | Description                                      |
+| :------------ | :----- | :------- | :----------------------------------------------- |
+| `title`       | string | No\*     | Tiêu đề sản phẩm                                 |
+| `description` | string | No\*     | Mô tả chi tiết sản phẩm                          |
+| `model`       | string | No       | Custom Gemini model (mặc định: gemini-2.0-flash) |
 
-> **⚠️ Lưu ý:** Nếu cung cấp `model`, bạn **bắt buộc** phải cung cấp `api_key`, và ngược lại. Hoặc bỏ qua cả hai để dùng config mặc định.
+> **Lưu ý:** Ít nhất một trong hai trường `title` hoặc `description` là bắt buộc.
 
 **Response thành công:**
 
-```bash
+```json
 {
   "result": "OK",
   "data": {
     "attributes": {
-      "country": {"value": ["JP"], "evidence": "日本製", "confidence": 1.0},
-      "size": {"value": "M", "evidence": "サイズM", "confidence": 1.0},
-      "material": {"value": "none", "evidence": "none", "confidence": 0.0}
+      "country": {
+        "value": [],
+        "evidence": "説明文に製造国や原産国に関する記載がありません。",
+        "confidence": 0.0
+      },
+      "size": {
+        "value": "S, M, L",
+        "evidence": "サイズ: S/M/L",
+        "confidence": 0.9
+      },
+      "material": {
+        "value": "ポリエステル, ポリウレタン",
+        "evidence": "素材: ポリエステル95% ポリウレタン5%",
+        "confidence": 1.0
+      },
+      "target_user": {
+        "value": ["women"],
+        "evidence": "レディース ストレートパンツ",
+        "confidence": 0.8
+      },
+      "hscode": {
+        "value": "620463",
+        "evidence": "女子用ズボン、合成繊維製",
+        "confidence": 0.95
+      }
     },
-    "model": "gemini-2.5-flash",
-    "is_custom": true,
     "cache": false,
-    "time": 250
+    "time": 2500,
+    "model": "gemini-2.5-flash"
   }
 }
 ```
 
-Response (Lỗi Validation):
+---
+
+### 🔸 2. Batch Detection `/batch-detect-product`
+
+**Request:**
 
 ```bash
+POST /batch-detect-product
+Content-Type: application/json
+X-API-KEY: your-api-key
+
 {
-  "result": "Failed",
-  "errors": [
+  "items": [
     {
-      "code": "VALIDATION_ERROR",
-      "message": "Custom model requires custom api_key. Please provide both 'model' and 'api_key' together, or omit both to use defaults."
-    }
-  ]
-}
-```
-
-Response (Lỗi API Key):
-
-```bash
-{
-  "result": "Failed",
-  "errors": [
+      "title": "Men's Cotton T-Shirt",
+      "description": "Made in Vietnam, 100% cotton, Size L"
+    },
     {
-      "code": "AUTH_ERROR",
-      "message": "Invalid Gemini API key. Please check your credentials."
+      "title": "Women's Silk Dress",
+      "description": "原産国: 日本、シルク100%"
     }
-  ]
+  ],
+  "model": "gemini-2.0-flash"  // optional
 }
 ```
 
-Response (Lỗi Gemini):
+**Input Parameters:**
 
-```bash
-{
-  "result": "Failed",
-  "errors": [
-    {
-      "code": "QUOTA_ERROR",
-      "message": "Gemini quota exceeded or rate limit hit."
-    }
-  ]
-}
-```
+| Parameter | Type   | Required | Description                     |
+| :-------- | :----- | :------- | :------------------------------ |
+| `items`   | array  | Yes      | Mảng các sản phẩm cần phân tích |
+| `model`   | string | No       | Custom Gemini model             |
 
-#### 🔸 2. Batch Detection /batch-detect
+**Response:**
 
-**Request mặc định:**
-
-```bash
-POST /batch-detect
-{
-  "descriptions": ["Made in Wales", "原産国: Indonesia / Vietnam"]
-}
-```
-
-**Request với custom model và api_key:**
-
-```bash
-POST /batch-detect
-{
-  "descriptions": ["Made in Wales", "原産国: Indonesia / Vietnam"],
-  "model": "gemini-2.5-flash",
-  "api_key": "your-custom-gemini-api-key"
-}
-```
-
-**Response (Batch):**
-
-```bash
+```json
 {
   "result": "OK",
   "data": {
     "results": [
       {
-        "attributes": { "country": {"value": ["GB"], "evidence": "Made in Wales"} },
+        "attributes": {
+          "country": {
+            "value": ["VNM"],
+            "evidence": "Made in Vietnam",
+            "confidence": 1.0
+          },
+          "size": { "value": "L", "evidence": "Size L", "confidence": 0.9 },
+          "material": {
+            "value": "cotton",
+            "evidence": "100% cotton",
+            "confidence": 1.0
+          },
+          "target_user": {
+            "value": ["men"],
+            "evidence": "Men's Cotton T-Shirt",
+            "confidence": 0.9
+          },
+          "hscode": {
+            "value": "610910",
+            "evidence": "Men's T-shirt, cotton",
+            "confidence": 0.9
+          }
+        },
         "cache": false
       },
       {
-        "attributes": { "country": {"value": ["ID", "VN"], "evidence": "原産国: Indonesia / Vietnam"} },
+        "attributes": {
+          "country": {
+            "value": ["JPN"],
+            "evidence": "原産国: 日本",
+            "confidence": 1.0
+          },
+          "material": {
+            "value": "シルク",
+            "evidence": "シルク100%",
+            "confidence": 1.0
+          },
+          "target_user": {
+            "value": ["women"],
+            "evidence": "Women's Silk Dress",
+            "confidence": 0.9
+          },
+          "hscode": {
+            "value": "620442",
+            "evidence": "Women's dress, silk",
+            "confidence": 0.85
+          }
+        },
         "cache": false
       }
     ],
     "total": 2,
     "cache_hits": 0,
     "ai_calls": 2,
-    "model": "gemini-2.5-flash",
-    "is_custom": true,
-    "time": 500
+    "model": "gemini-2.0-flash",
+    "time": 3500
   }
 }
 ```
 
-#### 🔸 3. Health Check /health
+---
+
+### 🔸 3. Health Check `/health`
 
 ```bash
 GET /health
@@ -330,72 +346,215 @@ GET /health
 
 Response:
 
-```bash
-{"status": "healthy", "service": "AI Country Detector", "version": "1.4.1"}
+```json
+{
+  "status": "healthy",
+  "service": "Product Detector with HS Code",
+  "version": "3.0.0"
+}
 ```
 
-#### 🔸 4. Metrics /metrics
+---
+
+### 🔸 4. Clear Cache `/clear-cache`
+
+```bash
+POST /clear-cache
+X-API-KEY: your-api-key
+```
+
+Response:
+
+```json
+{ "result": "OK", "message": "Cache cleared successfully", "items_cleared": 15 }
+```
+
+---
+
+### 🔸 5. Metrics `/metrics`
 
 Xuất định dạng Prometheus (dùng cho Grafana / Prometheus dashboard).
 
-### 🧪 Testing
+---
 
-Manual test:
+## ❌ Error Responses
 
-```bash
-curl http://localhost:5000/health
+### Validation Errors (400)
+
+```json
+{
+  "result": "Failed",
+  "errors": [
+    {
+      "code": "VALIDATION_ERROR",
+      "message": "At least one of 'title' or 'description' is required"
+    }
+  ]
+}
 ```
 
-Ví dụ mô tả:
+### Authentication Error (401)
 
-| Mô tả                                                  | Kết quả        |
-| :----------------------------------------------------- | :------------- |
-| 🇯🇵 `"原産国: Indonesia / Vietnam、サイズ23cm/24cm"`    | `["ID", "VN"]` |
-| 🇬🇧 `"Made in China, black cotton Nike shirt"`          | `["CN"]`       |
-| 🏴 `"Made in Wales. RASWカシミヤセーター、アイボリー"` | `["GB"]`       |
-| 🧨 (Rỗng)                                              | `["ZZ"]`       |
+```json
+{
+  "result": "Failed",
+  "errors": [{ "code": "AUTH_ERROR", "message": "Invalid API Key" }]
+}
+```
 
-### 📈 Monitoring & Logs
+### Quota Error (503)
 
-Logs: Console & app.log (xoay vòng, 10MB × 5 files)
+```json
+{
+  "result": "Failed",
+  "errors": [
+    {
+      "code": "QUOTA_ERROR",
+      "message": "Vertex AI quota exceeded. Please try again later."
+    }
+  ]
+}
+```
 
-Metrics: /metrics → Prometheus counters
+### Initialization Error (500)
 
-api_requests_total
+```json
+{
+  "result": "Failed",
+  "errors": [
+    {
+      "code": "INIT_ERROR",
+      "message": "Failed to initialize detector: GOOGLE_APPLICATION_CREDENTIALS is required"
+    }
+  ]
+}
+```
 
-api_request_duration_seconds
+---
 
-Cache: Lưu cache nếu confidence > 0.5
+## 🧪 Testing với Postman
 
-### 🧩 Troubleshooting
+### Test Cases
 
-| Vấn đề                  | Nguyên nhân & Giải pháp                                   |
-| :---------------------- | :-------------------------------------------------------- |
-| ❌ 401 Unauthorized     | Quên gửi `X-API-KEY` hoặc sai key                         |
-| ❌ 400 VALIDATION_ERROR | Cung cấp `model` mà không có `api_key`, hoặc ngược lại    |
-| ❌ 400 INIT_ERROR       | API key format không hợp lệ hoặc quá ngắn                 |
-| ❌ 503 AUTH_ERROR       | Sai `GEMINI_API_KEY` hoặc API key không có quyền truy cập |
-| ❌ 503 QUOTA_ERROR      | Hết quota Gemini API                                      |
-| ❌ 503 MODEL_NOT_FOUND  | Model name không tồn tại hoặc không accessible            |
-| ⚠️ JSON parse error     | AI trả về text không hợp lệ → fallback regex              |
-| 🔄 Port conflict        | Đổi `PORT` trong `.env` hoặc `docker-compose.yml`         |
-| 🐳 Docker build fail    | Cập nhật Docker / base image                              |
+#### ✅ Case 1: Chỉ có title
 
-### 🧩 Tech Stack
+```json
+POST /detect-product
+{
+  "title": "Men's Cotton T-Shirt Made in Vietnam"
+}
+```
 
-| Thành phần        | Công nghệ               |
-| :---------------- | :---------------------- |
-| Backend           | Flask 3.x               |
-| AI Model          | Google Gemini 2.0 Flash |
-| AI Client (Async) | google-generativeai     |
-| Async Runtime     | asyncio                 |
-| Metrics           | prometheus-client       |
-| Container         | Docker / Docker Compose |
-| Logging           | RotatingFileHandler     |
-| Python            | 3.12+                   |
+#### ✅ Case 2: Chỉ có description
 
-### 📜 License
+```json
+POST /detect-product
+{
+  "description": "原産国: 日本、シルク100%、サイズM"
+}
+```
 
-Bản quyền © 2025 AIOT Inc.
+#### ✅ Case 3: Cả title và description
+
+```json
+POST /detect-product
+{
+  "title": "レディース ストレートパンツ",
+  "description": "素材: ポリエステル95% ポリウレタン5%、詳細サイズ: S/M/L"
+}
+```
+
+#### ❌ Case 4: Thiếu cả title và description
+
+```json
+POST /detect-product
+{}
+```
+
+→ Response: `400 VALIDATION_ERROR`
+
+#### ❌ Case 5: Thiếu API Key
+
+```
+POST /detect-product
+(No X-API-KEY header)
+```
+
+→ Response: `401 AUTH_ERROR`
+
+#### ❌ Case 6: Model rỗng
+
+```json
+POST /detect-product
+{
+  "title": "Test",
+  "model": ""
+}
+```
+
+→ Response: `400 VALIDATION_ERROR`
+
+---
+
+## 📊 HS Code Reference
+
+Dựa theo bảng phân loại của [Japan Post](https://www.post.japanpost.jp/int/use/publication/contentslist/index.php?lang=_ja):
+
+| Category                     | HS Code | Example                |
+| :--------------------------- | :------ | :--------------------- |
+| Women's cotton dress         | 620442  | ワンピース、綿製       |
+| Men's T-shirt (cotton)       | 610910  | T シャツ、綿製         |
+| Women's trousers (synthetic) | 620463  | 女性用パンツ、合成繊維 |
+| Laptop computer              | 847130  | ノートパソコン         |
+| Eyeshadow                    | 330420  | アイシャドウ           |
+| Earring                      | 711790  | イヤリング             |
+
+> **Lưu ý số chữ số HS Code:**
+>
+> - Ireland: 10 chữ số
+> - France + lãnh thổ hải ngoại: 8 chữ số
+> - Các nước khác: 6 chữ số
+
+---
+
+## 📈 Monitoring & Logs
+
+- **Logs**: Console & `app.log` (xoay vòng, 10MB × 5 files)
+- **Metrics**: `/metrics` → Prometheus counters
+- **Cache**: Lưu cache nếu confidence > 0.5
+
+---
+
+## 🧩 Troubleshooting
+
+| Vấn đề                  | Nguyên nhân & Giải pháp                                            |
+| :---------------------- | :----------------------------------------------------------------- |
+| ❌ 401 Unauthorized     | Quên gửi `X-API-KEY` hoặc sai key                                  |
+| ❌ 400 VALIDATION_ERROR | Thiếu cả `title` và `description`                                  |
+| ❌ 500 INIT_ERROR       | Thiếu `GOOGLE_APPLICATION_CREDENTIALS` hoặc `GOOGLE_CLOUD_PROJECT` |
+| ❌ 503 QUOTA_ERROR      | Hết quota Vertex AI                                                |
+| ❌ 503 AUTH_ERROR       | Sai credentials hoặc không có quyền Vertex AI                      |
+| 🔄 Port conflict        | Đổi `PORT` trong `.env` hoặc `docker-compose.yml`                  |
+
+---
+
+## 🧩 Tech Stack
+
+| Thành phần    | Công nghệ               |
+| :------------ | :---------------------- |
+| Backend       | Flask 3.x               |
+| AI Model      | Google Gemini 2.0 Flash |
+| AI Platform   | Vertex AI               |
+| Async Runtime | asyncio                 |
+| Metrics       | prometheus-client       |
+| Container     | Docker / Docker Compose |
+| Logging       | RotatingFileHandler     |
+| Python        | 3.12+                   |
+
+---
+
+## 📜 License
+
+Bản quyền © 2025-2026 AIOT Inc.
 
 Phát triển bởi AIOT_AI_LAB

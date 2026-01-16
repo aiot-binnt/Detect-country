@@ -7,4 +7,8 @@ google-auth
 langdetect
 prometheus-client
 gunicorn
-requests  
+requests
+# HS Code Scraper (optional - for updating Japan Post data)
+selenium
+webdriver-manager
+beautifulsoup4
