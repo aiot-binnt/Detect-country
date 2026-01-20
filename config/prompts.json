@@ -1,0 +1,36 @@
+{
+  "_description": "Prompt templates for AI Country Detector - Edit this file to modify prompts without changing code",
+  "_valid_fields": ["country", "hscode", "material", "size", "target_user"],
+  
+  "hs_code_examples": "【HSコード参考例 - Japan Post公式 10桁形式】\n※ 以下は日本郵便公式ウェブサイトから取得した正確なHSコードです。\n\n■ 衣類 (Clothing):\n- ズボン（女性用 合成繊維）Pants for women, synthetic → 6204631890\n- ズボン（女性用 綿製）Pants for women, cotton → 6204621090\n- ズボン（男性用 合成繊維）Pants for men, synthetic → 6203431890\n- ズボン（男性用 綿製）Pants for men, cotton → 6203421090\n- アイマスク Eye Mask → 6307909899\n\n■ 電子機器 (Electronics):\n- IHコンロ IH cooking heater → 8516609000\n- アイロン Clothing Iron → 8451300000\n- アダプター Adapter → 8471900000\n- アコースティックギター Acoustic Guitar → 9202903000\n\n■ 化粧品 (Cosmetics):\n- アイシャドウ Eyeshadow → 3304200000\n- アイブロウペンシル Eyebrow Pencil → 3304200000\n- アイライナー Eyeliner → 3304200000\n- 油絵具 Oil Color → 3213100000\n\n■ 食品 (Food):\n- アーモンド Almond → 0802129000\n- アーモンドミルク Almond Milk → 2009899999\n- 青汁（糖が添加） Green Juice with sugar → 2009905180\n- 青汁（糖が添加されていない） Green Juice without sugar → 2009905990\n- 青のり Green Laver → 1212210000\n- あずき Red Bean → 0713320000\n- 甘栗 Baked Chestnut → 2008199980\n- 飴 Candy → 1704909919\n\n■ 日用品 (Daily goods):\n- アイラッシュカーラー Eyelash Curler → 9615900000\n- アクリルスタンド Acrylic Stand Figure → 9503002190\n- 圧縮バッグ Compression bag → 4202929890\n- 編針 Knitting Needles → 7319901000\n\n■ 医薬品 (Medicine):\n- アスピリン Aspirin → 3004900000\n\n【重要な注意事項】\n- 上記のHSコードは日本郵便公式サイトから取得した正確なデータです\n- 商品の素材、性別、用途によってHSコードが異なります\n- 判断に迷う場合は日本郵便公式サイトで検索してください\n- URL: https://www.post.japanpost.jp/int/use/publication/contentslist/index.php",
+
+  "field_rules": {
+    "country": "**Country (製造国/原産国)**:\n- ISO 3166-1 alpha-2 コードに正規化 (例: Japan → \"JP\", China → \"CN\")\n- 見つからない場合: value を [], evidence を \"\" (空文字)\n- 複数の国がある場合はリストで返却 (例: [\"ID\", \"VN\"])",
+    
+    "size": "**Size (サイズ)**:\n- 見つからない場合: value を \"\", evidence を \"\" (空文字)",
+    
+    "material": "**Material (素材)**:\n- 見つからない場合: value を \"\", evidence を \"\" (空文字)",
+    
+    "target_user": "**Target User (対象ユーザー)**:\n- 値は: \"children\", \"adult\", \"men\", \"women\", \"senior\", \"baby\", \"unisex\" から選択\n- 見つからない場合: value を [], evidence を \"\" (空文字)",
+    
+    "hscode": "**HS Code (HSコード) - 日本郵便10桁形式**:\n- 商品情報から総合的に判断\n- **必ず10桁のHSコードを返却** (例: \"6204631890\", \"6109100099\")\n- 日本郵便の公式HSコード表に基づいて判定\n- 判定できない場合: value を \"\", evidence を \"\" (空文字)"
+  },
+
+  "field_schema": {
+    "country": "\"country\": {\"value\": [\"XX\"], \"evidence\": \"根拠テキスト\", \"confidence\": 0.0}",
+    "size": "\"size\": {\"value\": \"抽出値\", \"evidence\": \"根拠テキスト\", \"confidence\": 0.0}",
+    "material": "\"material\": {\"value\": \"抽出値\", \"evidence\": \"根拠テキスト\", \"confidence\": 0.0}",
+    "target_user": "\"target_user\": {\"value\": [\"抽出値\"], \"evidence\": \"根拠テキスト\", \"confidence\": 0.0}",
+    "hscode": "\"hscode\": {\"value\": \"10桁コード\", \"evidence\": \"判定根拠\", \"confidence\": 0.0}"
+  },
+
+  "prompt_template": "あなたは商品説明の属性検出とHSコード分類の専門家です。\n\n【タスク】\n以下の情報から指定された商品属性のみを抽出してください。\n\n【入力情報】\n- 商品タイトル (title)\n- 商品説明 (description)\n\n【抽出する属性】\n{rules}\n\n{hs_code_examples}\n\n【出力スキーマ (JSON)】\n{schema}\n\n【重要】\n- JSONのみを出力してください\n- 指定された属性のみを返却してください\n- HSコードがある場合は必ず10桁で返却してください（日本郵便形式）\n- confidence は 0.0 〜 1.0 の範囲で判定の確信度を記載\n- 見つからない場合は、value と evidence を空にしてください（説明文は不要）",
+
+  "default_attributes": {
+    "country": {"value": [], "evidence": "", "confidence": 0.0},
+    "size": {"value": "", "evidence": "", "confidence": 0.0},
+    "material": {"value": "", "evidence": "", "confidence": 0.0},
+    "target_user": {"value": [], "evidence": "", "confidence": 0.0},
+    "hscode": {"value": "", "evidence": "", "confidence": 0.0}
+  }
+}

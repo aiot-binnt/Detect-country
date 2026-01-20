@@ -3,7 +3,8 @@ import json
 import os
 import traceback
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from pathlib import Path
 from google.cloud import aiplatform
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 import vertexai
@@ -20,100 +21,85 @@ except ImportError:
 MODEL_NAME = "gemini-2.0-flash-exp" 
 MAX_TEXT_LENGTH = 1500
 
-# HS Code Reference Examples from Japan Post (10-digit format)
-# Source: https://www.post.japanpost.jp/int/use/publication/contentslist/index.php
-# VERIFIED DATA from Japan Post official website
-HS_CODE_EXAMPLES = """
-【HSコード参考例 - Japan Post公式 10桁形式】
-※ 以下は日本郵便公式ウェブサイトから取得した正確なHSコードです。
+# Path to prompts config file
+PROMPTS_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'prompts.json')
 
-■ 衣類 (Clothing):
-- ズボン（女性用 合成繊維）Pants for women, synthetic → 6204631890
-- ズボン（女性用 綿製）Pants for women, cotton → 6204621090
-- ズボン（男性用 合成繊維）Pants for men, synthetic → 6203431890
-- ズボン（男性用 綿製）Pants for men, cotton → 6203421090
-- アイマスク Eye Mask → 6307909899
+def load_prompts(force_reload: bool = False) -> Dict[str, Any]:
+    """
+    Load prompts from external JSON config file.
+    
+    Args:
+        force_reload: If True, reload from file even if already cached
+        
+    Returns:
+        Dict containing all prompt configurations
+    """
+    global _prompts_cache
+    
+    if not force_reload and '_prompts_cache' in globals() and _prompts_cache:
+        return _prompts_cache
+    
+    try:
+        with open(PROMPTS_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            _prompts_cache = json.load(f)
+            logging.info(f"✓ Loaded prompts from {PROMPTS_CONFIG_PATH}")
+            return _prompts_cache
+    except FileNotFoundError:
+        logging.error(f"Prompts config file not found: {PROMPTS_CONFIG_PATH}")
+        raise
+    except json.JSONDecodeError as e:
+        logging.error(f"Invalid JSON in prompts config: {e}")
+        raise
 
-■ 電子機器 (Electronics):
-- IHコンロ IH cooking heater → 8516609000
-- アイロン Clothing Iron → 8451300000
-- アダプター Adapter → 8471900000
-- アコースティックギター Acoustic Guitar → 9202903000
+# Load prompts on module import
+_prompts_cache = None
+try:
+    _prompts_cache = load_prompts()
+except Exception as e:
+    logging.warning(f"Failed to load prompts config, using fallback: {e}")
+    _prompts_cache = {
+        "field_rules": {},
+        "field_schema": {},
+        "hs_code_examples": "",
+        "prompt_template": "",
+        "default_attributes": {
+            "country": {"value": [], "evidence": "", "confidence": 0.0},
+            "size": {"value": "", "evidence": "", "confidence": 0.0},
+            "material": {"value": "", "evidence": "", "confidence": 0.0},
+            "target_user": {"value": [], "evidence": "", "confidence": 0.0},
+            "hscode": {"value": "", "evidence": "", "confidence": 0.0}
+        }
+    }
 
-■ 化粧品 (Cosmetics):
-- アイシャドウ Eyeshadow → 3304200000
-- アイブロウペンシル Eyebrow Pencil → 3304200000
-- アイライナー Eyeliner → 3304200000
-- 油絵具 Oil Color → 3213100000
+# Convenience accessors
+def get_field_rules() -> Dict[str, str]:
+    """Get field extraction rules from config."""
+    prompts = load_prompts()
+    return prompts.get("field_rules", {})
 
-■ 食品 (Food):
-- アーモンド Almond → 0802129000
-- アーモンドミルク Almond Milk → 2009899999
-- 青汁（糖が添加） Green Juice with sugar → 2009905180
-- 青汁（糖が添加されていない） Green Juice without sugar → 2009905990
-- 青のり Green Laver → 1212210000
-- あずき Red Bean → 0713320000
-- 甘栗 Baked Chestnut → 2008199980
-- 飴 Candy → 1704909919
+def get_field_schema() -> Dict[str, str]:
+    """Get field output schema from config."""
+    prompts = load_prompts()
+    return prompts.get("field_schema", {})
 
-■ 日用品 (Daily goods):
-- アイラッシュカーラー Eyelash Curler → 9615900000
-- アクリルスタンド Acrylic Stand Figure → 9503002190
-- 圧縮バッグ Compression bag → 4202929890
-- 編針 Knitting Needles → 7319901000
+def get_hs_code_examples() -> str:
+    """Get HS code examples from config."""
+    prompts = load_prompts()
+    return prompts.get("hs_code_examples", "")
 
-■ 医薬品 (Medicine):
-- アスピリン Aspirin → 3004900000
+def get_prompt_template() -> str:
+    """Get main prompt template from config."""
+    prompts = load_prompts()
+    return prompts.get("prompt_template", "")
 
-【重要な注意事項】
-- 上記のHSコードは日本郵便公式サイトから取得した正確なデータです
-- 商品の素材、性別、用途によってHSコードが異なります
-- 判断に迷う場合は日本郵便公式サイトで検索してください
-- URL: https://www.post.japanpost.jp/int/use/publication/contentslist/index.php
-"""
+def get_default_attributes() -> Dict[str, Any]:
+    """Get default attribute values from config."""
+    prompts = load_prompts()
+    return prompts.get("default_attributes", {})
 
-# Field-specific extraction rules for dynamic prompt generation
-FIELD_RULES = {
-    "country": """1. **Country (製造国/原産国)**: 
-   - ISO 3166-1 alpha-2 コードに正規化 (例: Japan → "JP", China → "CN")
-   - 見つからない場合: value を [], evidence を "" (空文字)
-   - 複数の国がある場合はリストで返却 (例: ["ID", "VN"])""",
-   
-    "size": """2. **Size (サイズ)**: 
-   - 見つからない場合: value を "", evidence を "" (空文字)""",
-   
-    "material": """3. **Material (素材)**: 
-   - 見つからない場合: value を "", evidence を "" (空文字)""",
-   
-    "target_user": """4. **Target User (対象ユーザー)**:
-   - 値は: "children", "adult", "men", "women", "senior", "baby", "unisex" から選択
-   - 見つからない場合: value を [], evidence を "" (空文字)""",
-   
-    "hscode": f"""5. **HS Code (HSコード) - 日本郵便10桁形式**:
-   - 商品情報から総合的に判断
-   - **必ず10桁のHSコードを返却** (例: "6204631890", "6109100099")
-   - 日本郵便の公式HSコード表に基づいて判定
-   - 判定できない場合: value を "", evidence を "" (空文字)
+# Keep DEFAULT_ATTRIBUTES for backward compatibility
+DEFAULT_ATTRIBUTES = get_default_attributes()
 
-{HS_CODE_EXAMPLES}"""
-}
-
-# Field-specific output schema templates
-FIELD_SCHEMA = {
-    "country": '"country": {"value": ["XX"], "evidence": "根拠テキスト", "confidence": 0.0}',
-    "size": '"size": {"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}',
-    "material": '"material": {"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}',
-    "target_user": '"target_user": {"value": ["抽出値"], "evidence": "根拠テキスト", "confidence": 0.0}',
-    "hscode": '"hscode": {"value": "10桁コード", "evidence": "判定根拠", "confidence": 0.0}'
-}
-
-DEFAULT_ATTRIBUTES = {
-    "country": {"value": [], "evidence": "", "confidence": 0.0},
-    "size": {"value": "", "evidence": "", "confidence": 0.0},
-    "material": {"value": "", "evidence": "", "confidence": 0.0},
-    "target_user": {"value": [], "evidence": "", "confidence": 0.0},
-    "hscode": {"value": "", "evidence": "", "confidence": 0.0}
-}
 
 class GeminiDetector:
     def __init__(self, model_name: Optional[str] = None):
@@ -197,25 +183,40 @@ class GeminiDetector:
         Returns:
             Dynamic prompt string
         """
+        # Load from JSON config
+        field_rules = get_field_rules()
+        field_schema = get_field_schema()
+        hs_code_examples = get_hs_code_examples()
+        prompt_template = get_prompt_template()
+        
         # Build rules section - only for requested fields
         rules = []
         for i, field in enumerate(fields, 1):
-            if field in FIELD_RULES:
-                rule = FIELD_RULES[field]
-                # Re-number the rules
-                rule = re.sub(r'^(\d+)\.', f'{i}.', rule)
+            if field in field_rules:
+                rule = f"{i}. {field_rules[field]}"
                 rules.append(rule)
         
         # Build schema section - only for requested fields
         schema_parts = []
         for field in fields:
-            if field in FIELD_SCHEMA:
-                schema_parts.append(f"    {FIELD_SCHEMA[field]}")
+            if field in field_schema:
+                schema_parts.append(f"    {field_schema[field]}")
         
         schema = "{\n  \"attributes\": {\n" + ",\n".join(schema_parts) + "\n  }\n}"
         
-        # Build the complete prompt
-        prompt = f"""あなたは商品説明の属性検出とHSコード分類の専門家です。
+        # Include HS code examples only if hscode is requested
+        hs_examples_section = hs_code_examples if "hscode" in fields else ""
+        
+        # Build the complete prompt using template
+        if prompt_template:
+            prompt = prompt_template.format(
+                rules="\n".join(rules),
+                hs_code_examples=hs_examples_section,
+                schema=schema
+            )
+        else:
+            # Fallback if template not available
+            prompt = f"""あなたは商品説明の属性検出とHSコード分類の専門家です。
 
 【タスク】
 以下の情報から指定された商品属性のみを抽出してください。
@@ -226,6 +227,8 @@ class GeminiDetector:
 
 【抽出する属性】
 {chr(10).join(rules)}
+
+{hs_examples_section}
 
 【出力スキーマ (JSON)】
 {schema}
