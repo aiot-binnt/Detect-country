@@ -72,58 +72,40 @@ HS_CODE_EXAMPLES = """
 - URL: https://www.post.japanpost.jp/int/use/publication/contentslist/index.php
 """
 
-# Updated System Prompt with HS Code Detection (Japan Post 10-digit format)
-SYSTEM_PROMPT = f"""
-あなたは商品説明の属性検出とHSコード分類の専門家です。
-
-【タスク】
-以下の情報から商品属性を抽出し、日本郵便のHSコード（10桁形式）を判定してください。
-
-【入力情報】
-- 商品タイトル (title)
-- 商品説明 (description)
-
-【抽出ルール】
-1. **Country (製造国/原産国)**: 
+# Field-specific extraction rules for dynamic prompt generation
+FIELD_RULES = {
+    "country": """1. **Country (製造国/原産国)**: 
    - ISO 3166-1 alpha-2 コードに正規化 (例: Japan → "JP", China → "CN")
    - 見つからない場合: value を [], evidence を "" (空文字)
-   - 複数の国がある場合はリストで返却 (例: ["ID", "VN"])
-
-2. **Size (サイズ)**: 
-   - 見つからない場合: value を "", evidence を "" (空文字)
-
-3. **Material (素材)**: 
-   - 見つからない場合: value を "", evidence を "" (空文字)
-
-4. **Target User (対象ユーザー)**:
+   - 複数の国がある場合はリストで返却 (例: ["ID", "VN"])""",
+   
+    "size": """2. **Size (サイズ)**: 
+   - 見つからない場合: value を "", evidence を "" (空文字)""",
+   
+    "material": """3. **Material (素材)**: 
+   - 見つからない場合: value を "", evidence を "" (空文字)""",
+   
+    "target_user": """4. **Target User (対象ユーザー)**:
    - 値は: "children", "adult", "men", "women", "senior", "baby", "unisex" から選択
-   - 見つからない場合: value を [], evidence を "" (空文字)
-
-5. **HS Code (HSコード) - 日本郵便10桁形式**:
-   - 上記で抽出した title, description, material, size, target_user を総合的に判断
+   - 見つからない場合: value を [], evidence を "" (空文字)""",
+   
+    "hscode": f"""5. **HS Code (HSコード) - 日本郵便10桁形式**:
+   - 商品情報から総合的に判断
    - **必ず10桁のHSコードを返却** (例: "6204631890", "6109100099")
    - 日本郵便の公式HSコード表に基づいて判定
    - 判定できない場合: value を "", evidence を "" (空文字)
 
-{HS_CODE_EXAMPLES}
+{HS_CODE_EXAMPLES}"""
+}
 
-【出力スキーマ (JSON)】
-{{
-  "attributes": {{
-    "country": {{"value": ["XX"], "evidence": "根拠テキスト", "confidence": 0.0}},
-    "size": {{"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}},
-    "material": {{"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}},
-    "target_user": {{"value": ["抽出値"], "evidence": "根拠テキスト", "confidence": 0.0}},
-    "hscode": {{"value": "10桁コード", "evidence": "判定根拠", "confidence": 0.0}}
-  }}
-}}
-
-【重要】
-- JSONのみを出力してください
-- HSコードは必ず10桁で返却してください（日本郵便形式）
-- confidence は 0.0 〜 1.0 の範囲で判定の確信度を記載
-- 見つからない場合は、value と evidence を空にしてください（説明文は不要）
-"""
+# Field-specific output schema templates
+FIELD_SCHEMA = {
+    "country": '"country": {"value": ["XX"], "evidence": "根拠テキスト", "confidence": 0.0}',
+    "size": '"size": {"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}',
+    "material": '"material": {"value": "抽出値", "evidence": "根拠テキスト", "confidence": 0.0}',
+    "target_user": '"target_user": {"value": ["抽出値"], "evidence": "根拠テキスト", "confidence": 0.0}',
+    "hscode": '"hscode": {"value": "10桁コード", "evidence": "判定根拠", "confidence": 0.0}'
+}
 
 DEFAULT_ATTRIBUTES = {
     "country": {"value": [], "evidence": "", "confidence": 0.0},
@@ -166,10 +148,8 @@ class GeminiDetector:
         # Initialize Vertex AI with service account
         try:
             vertexai.init(project=project_id, location=location)
-            self.model = GenerativeModel(
-                model_name=self.model_name,
-                system_instruction=SYSTEM_PROMPT
-            )
+            # Model without static system instruction - will use dynamic prompts
+            self.model = GenerativeModel(model_name=self.model_name)
             logging.info(f"✓ Using Vertex AI with Service Account: {self.model_name} (Project: {project_id}, Location: {location})")
         except Exception as e:
             logging.error(f"Failed to initialize Vertex AI with service account: {e}")
@@ -192,36 +172,99 @@ class GeminiDetector:
             
         return cleaned.strip()
 
-    def _get_default_result(self, error: str = None, code: str = None) -> Dict[str, Any]:
+    def _get_default_result(self, error: str = None, code: str = None, fields: list = None) -> Dict[str, Any]:
         """Return a standardized fallback result."""
         import copy
-        result = {"attributes": copy.deepcopy(DEFAULT_ATTRIBUTES)}
+        if fields:
+            # Only include requested fields
+            attrs = {k: copy.deepcopy(v) for k, v in DEFAULT_ATTRIBUTES.items() if k in fields}
+        else:
+            attrs = copy.deepcopy(DEFAULT_ATTRIBUTES)
+        result = {"attributes": attrs}
         if error:
             result["error"] = error
             result["error_code"] = code
         return result
 
-    async def detect_product(self, title: str = "", description: str = "") -> Dict[str, Any]:
+    def _build_dynamic_prompt(self, fields: list) -> str:
+        """
+        Build a dynamic system prompt based on requested fields.
+        This reduces token usage by only including rules for needed attributes.
+        
+        Args:
+            fields: List of field names to detect
+            
+        Returns:
+            Dynamic prompt string
+        """
+        # Build rules section - only for requested fields
+        rules = []
+        for i, field in enumerate(fields, 1):
+            if field in FIELD_RULES:
+                rule = FIELD_RULES[field]
+                # Re-number the rules
+                rule = re.sub(r'^(\d+)\.', f'{i}.', rule)
+                rules.append(rule)
+        
+        # Build schema section - only for requested fields
+        schema_parts = []
+        for field in fields:
+            if field in FIELD_SCHEMA:
+                schema_parts.append(f"    {FIELD_SCHEMA[field]}")
+        
+        schema = "{\n  \"attributes\": {\n" + ",\n".join(schema_parts) + "\n  }\n}"
+        
+        # Build the complete prompt
+        prompt = f"""あなたは商品説明の属性検出とHSコード分類の専門家です。
+
+【タスク】
+以下の情報から指定された商品属性のみを抽出してください。
+
+【入力情報】
+- 商品タイトル (title)
+- 商品説明 (description)
+
+【抽出する属性】
+{chr(10).join(rules)}
+
+【出力スキーマ (JSON)】
+{schema}
+
+【重要】
+- JSONのみを出力してください
+- 指定された属性のみを返却してください
+- HSコードがある場合は必ず10桁で返却してください（日本郵便形式）
+- confidence は 0.0 〜 1.0 の範囲で判定の確信度を記載
+- 見つからない場合は、value と evidence を空にしてください（説明文は不要）
+"""
+        return prompt
+
+    async def detect_product(self, title: str = "", description: str = "", fields: list = None) -> Dict[str, Any]:
         """
         Main entry point to detect product attributes and HS Code.
         
         Args:
             title: Product title
             description: Product description
+            fields: List of fields to detect (e.g., ["country", "hscode"])
             
         Returns:
-            Dict with detected attributes including hscode
+            Dict with detected attributes for requested fields only
         """
+        # Default to all fields if not specified (for backward compatibility)
+        if not fields:
+            fields = list(DEFAULT_ATTRIBUTES.keys())
+        
         # Validate input
         if not title and not description:
-            return self._get_default_result("Both title and description are empty", "VALIDATION_ERROR")
+            return self._get_default_result("Both title and description are empty", "VALIDATION_ERROR", fields)
         
         # Clean and combine text
         cleaned_title = self._clean_text(title or "")
         cleaned_desc = self._clean_text(description or "")
         
         if not cleaned_title and not cleaned_desc:
-            return self._get_default_result("No valid text after cleaning", "VALIDATION_ERROR")
+            return self._get_default_result("No valid text after cleaning", "VALIDATION_ERROR", fields)
         
         try:
             # Truncate if needed
@@ -229,36 +272,42 @@ class GeminiDetector:
             if len(combined_text) > MAX_TEXT_LENGTH:
                 combined_text = combined_text[:MAX_TEXT_LENGTH] + "..."
             
+            # Build dynamic prompt based on requested fields
+            dynamic_prompt = self._build_dynamic_prompt(fields)
+            
             # Vertex AI Async Call
             generation_config = GenerationConfig(
                 temperature=0.0,
                 response_mime_type="application/json"
             )
             
+            # Combine system prompt with user input
+            full_prompt = f"{dynamic_prompt}\n\n【商品情報】\n{combined_text}"
+            
             response = await self.model.generate_content_async(
-                f"この商品情報を分析し、属性とHSコードを判定してください。\n\n{combined_text}",
+                full_prompt,
                 generation_config=generation_config
             )
             
             raw_content = response.text.strip()
-            return self._parse_json_response(raw_content)
+            return self._parse_json_response(raw_content, fields)
 
         except Exception as e:
             error_str = str(e).lower()
             
             # Handle specific Vertex AI errors
             if "quota" in error_str or "resource exhausted" in error_str:
-                return self._get_default_result("Vertex AI quota exceeded. Please try again later.", "QUOTA_ERROR")
+                return self._get_default_result("Vertex AI quota exceeded. Please try again later.", "QUOTA_ERROR", fields)
             elif "permission" in error_str or "unauthorized" in error_str or "unauthenticated" in error_str:
-                return self._get_default_result("Invalid credentials or insufficient permissions.", "AUTH_ERROR")
+                return self._get_default_result("Invalid credentials or insufficient permissions.", "AUTH_ERROR", fields)
             elif "not found" in error_str:
-                return self._get_default_result(f"Model '{self.model_name}' not found or not available.", "MODEL_ERROR")
+                return self._get_default_result(f"Model '{self.model_name}' not found or not available.", "MODEL_ERROR", fields)
             elif "invalid" in error_str and "api" in error_str:
-                return self._get_default_result("Invalid API configuration. Please check your settings.", "CONFIG_ERROR")
+                return self._get_default_result("Invalid API configuration. Please check your settings.", "CONFIG_ERROR", fields)
             else:
                 logging.error(f"Vertex AI Error: {e}", exc_info=True)
                 # Fallback to regex if AI fails completely
-                return self._heuristic_fallback(title or "", description or "")
+                return self._heuristic_fallback(title or "", description or "", fields)
 
     # Keep old method name for backward compatibility
     async def detect_country(self, text: str) -> Dict[str, Any]:
@@ -321,40 +370,54 @@ class GeminiDetector:
         
         return ""
 
-    def _parse_json_response(self, raw_text: str) -> Dict[str, Any]:
-        """Parse JSON and ensure structure."""
+    def _parse_json_response(self, raw_text: str, fields: list = None) -> Dict[str, Any]:
+        """Parse JSON and ensure structure, filtering to requested fields only."""
         try:
             parsed = json.loads(raw_text)
             import copy
-            attributes = parsed.get("attributes", copy.deepcopy(DEFAULT_ATTRIBUTES))
+            all_attributes = parsed.get("attributes", {})
+            
+            # Filter to only requested fields
+            if fields:
+                attributes = {}
+                for field in fields:
+                    if field in all_attributes:
+                        attributes[field] = all_attributes[field]
+                    else:
+                        attributes[field] = copy.deepcopy(DEFAULT_ATTRIBUTES.get(field, {}))
+            else:
+                attributes = all_attributes
             
             # Normalize country value to list if it's a string
-            country_attr = attributes.get('country', {})
-            if isinstance(country_attr.get('value'), str):
-                country_attr['value'] = [country_attr['value']] if country_attr['value'] else []
-                attributes['country'] = country_attr
+            if 'country' in attributes:
+                country_attr = attributes.get('country', {})
+                if isinstance(country_attr.get('value'), str):
+                    country_attr['value'] = [country_attr['value']] if country_attr['value'] else []
+                    attributes['country'] = country_attr
             
             # Normalize target_user value to list if it's a string
-            target_user_attr = attributes.get('target_user', {})
-            if isinstance(target_user_attr.get('value'), str):
-                target_user_attr['value'] = [target_user_attr['value']] if target_user_attr['value'] else []
-                attributes['target_user'] = target_user_attr
+            if 'target_user' in attributes:
+                target_user_attr = attributes.get('target_user', {})
+                if isinstance(target_user_attr.get('value'), str):
+                    target_user_attr['value'] = [target_user_attr['value']] if target_user_attr['value'] else []
+                    attributes['target_user'] = target_user_attr
             
             # Validate and normalize HS Code
-            hscode_attr = attributes.get('hscode', {})
-            if hscode_attr:
-                original_hscode = hscode_attr.get('value', '')
-                validated_hscode = self._validate_hscode(original_hscode)
-                hscode_attr['value'] = validated_hscode
-                
-                # Validate against Japan Post database if available
-                if HSCODE_LOOKUP_AVAILABLE and hscode_lookup and validated_hscode:
-                    validation_result = hscode_lookup.get_validated_hscode(validated_hscode)
-                    hscode_attr['validated'] = validation_result.get('is_valid', False)
-                    if validation_result.get('suggestions'):
-                        hscode_attr['suggestions'] = validation_result['suggestions'][:2]
-                
-                attributes['hscode'] = hscode_attr
+            if 'hscode' in attributes:
+                hscode_attr = attributes.get('hscode', {})
+                if hscode_attr:
+                    original_hscode = hscode_attr.get('value', '')
+                    validated_hscode = self._validate_hscode(original_hscode)
+                    hscode_attr['value'] = validated_hscode
+                    
+                    # Validate against Japan Post database if available
+                    if HSCODE_LOOKUP_AVAILABLE and hscode_lookup and validated_hscode:
+                        validation_result = hscode_lookup.get_validated_hscode(validated_hscode)
+                        hscode_attr['validated'] = validation_result.get('is_valid', False)
+                        if validation_result.get('suggestions'):
+                            hscode_attr['suggestions'] = validation_result['suggestions'][:2]
+                    
+                    attributes['hscode'] = hscode_attr
             
             # Sanitize all attributes to remove newlines and extra whitespace
             attributes = self._sanitize_attributes(attributes)
@@ -362,87 +425,98 @@ class GeminiDetector:
             return {"attributes": attributes}
         except json.JSONDecodeError as e:
             logging.warning(f"JSON decode failed: {e}")
-            return self._get_default_result("Failed to parse AI response", "PARSE_ERROR")
+            return self._get_default_result("Failed to parse AI response", "PARSE_ERROR", fields)
 
-    def _heuristic_fallback(self, title: str, description: str) -> Dict[str, Any]:
-        """Regex-based fallback when AI fails."""
+    def _heuristic_fallback(self, title: str, description: str, fields: list = None) -> Dict[str, Any]:
+        """Regex-based fallback when AI fails. Only detects requested fields."""
         import copy
-        attributes = copy.deepcopy(DEFAULT_ATTRIBUTES)
+        
+        # Default to all fields if not specified
+        if not fields:
+            fields = list(DEFAULT_ATTRIBUTES.keys())
+        
+        # Start with default values for requested fields only
+        attributes = {k: copy.deepcopy(v) for k, v in DEFAULT_ATTRIBUTES.items() if k in fields}
         text = f"{title} {description}"
         
         # Country detection
-        country_match = re.search(r'((?:made\s+in|原産国|製造国)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff]+))', text, re.IGNORECASE)
-        if country_match:
-            c_name = country_match.group(2).upper()
-            code = ""
-            if "JAPAN" in c_name or "日本" in c_name: code = "JP"
-            elif "CHINA" in c_name or "中国" in c_name: code = "CN"
-            elif "VIETNAM" in c_name or "ベトナム" in c_name: code = "VN"
-            elif "INDONESIA" in c_name: code = "ID"
-            
-            if code:
-                attributes["country"] = {"value": [code], "evidence": country_match.group(1), "confidence": 0.3}
+        if "country" in fields:
+            country_match = re.search(r'((?:made\s+in|原産国|製造国)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff]+))', text, re.IGNORECASE)
+            if country_match:
+                c_name = country_match.group(2).upper()
+                code = ""
+                if "JAPAN" in c_name or "日本" in c_name: code = "JP"
+                elif "CHINA" in c_name or "中国" in c_name: code = "CN"
+                elif "VIETNAM" in c_name or "ベトナム" in c_name: code = "VN"
+                elif "INDONESIA" in c_name: code = "ID"
+                
+                if code:
+                    attributes["country"] = {"value": [code], "evidence": country_match.group(1), "confidence": 0.3}
 
         # Size
-        size_match = re.search(r'((?:size|サイズ)[\s:/]*([A-Za-z0-9/ cmMLXS.]+))', text, re.IGNORECASE)
-        if size_match:
-            attributes["size"] = {"value": size_match.group(2).strip(), "evidence": size_match.group(1).strip(), "confidence": 0.3}
+        if "size" in fields:
+            size_match = re.search(r'((?:size|サイズ)[\s:/]*([A-Za-z0-9/ cmMLXS.]+))', text, re.IGNORECASE)
+            if size_match:
+                attributes["size"] = {"value": size_match.group(2).strip(), "evidence": size_match.group(1).strip(), "confidence": 0.3}
 
         # Material
-        mat_match = re.search(r'((?:material|素材|材料)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff0-9％/・]+))', text, re.IGNORECASE)
-        if mat_match:
-             val = mat_match.group(2) if len(mat_match.groups()) > 1 else mat_match.group(1)
-             attributes["material"] = {"value": val.strip(), "evidence": mat_match.group(0).strip(), "confidence": 0.3}
+        if "material" in fields:
+            mat_match = re.search(r'((?:material|素材|材料)[\s:]*([A-Za-z\u3040-\u30ff\u4e00-\u9fff0-9％/・]+))', text, re.IGNORECASE)
+            if mat_match:
+                 val = mat_match.group(2) if len(mat_match.groups()) > 1 else mat_match.group(1)
+                 attributes["material"] = {"value": val.strip(), "evidence": mat_match.group(0).strip(), "confidence": 0.3}
 
         # Target User - collect all matches
-        target_patterns = [
-            (r'((?:for|向け|対象)[\s:]*((?:kids?|children|baby|infant|toddler|キッズ|子供|こども|ベビー|赤ちゃん|幼児)))', 'children'),
-            (r'((?:for|向け|対象)[\s:]*((?:adult|大人|おとな|成人)))', 'adult'),
-            (r'((?:for|向け|対象)[\s:]*((?:men|male|メンズ|男性|紳士)))', 'men'),
-            (r'((?:for|向け|対象)[\s:]*((?:women|ladies|female|レディース|女性|婦人)))', 'women'),
-            (r'((?:for|向け|対象)[\s:]*((?:senior|elderly|シニア|高齢者|お年寄り)))', 'senior'),
-            (r'((?:for|向け|対象)[\s:]*((?:unisex|ユニセックス|男女兼用)))', 'unisex'),
-            # Direct mentions without prefix
-            (r'(キッズ|子供用|子ども用)', 'children'),
-            (r'(ベビー用|赤ちゃん用|乳児用)', 'baby'),
-            (r'(メンズ|男性用|紳士用)', 'men'),
-            (r'(レディース|女性用|婦人用)', 'women'),
-            (r'(シニア|高齢者用)', 'senior'),
-        ]
-        
-        found_users = []
-        evidence_list = []
-        
-        for pattern, user_type in target_patterns:
-            target_match = re.search(pattern, text, re.IGNORECASE)
-            if target_match and user_type not in found_users:
-                found_users.append(user_type)
-                evidence_list.append(target_match.group(0).strip())
-        
-        if found_users:
-            attributes["target_user"] = {
-                "value": found_users, 
-                "evidence": " ".join(evidence_list), 
-                "confidence": 0.3
-            }
+        if "target_user" in fields:
+            target_patterns = [
+                (r'((?:for|向け|対象)[\s:]*((?:kids?|children|baby|infant|toddler|キッズ|子供|こども|ベビー|赤ちゃん|幼児)))', 'children'),
+                (r'((?:for|向け|対象)[\s:]*((?:adult|大人|おとな|成人)))', 'adult'),
+                (r'((?:for|向け|対象)[\s:]*((?:men|male|メンズ|男性|紳士)))', 'men'),
+                (r'((?:for|向け|対象)[\s:]*((?:women|ladies|female|レディース|女性|婦人)))', 'women'),
+                (r'((?:for|向け|対象)[\s:]*((?:senior|elderly|シニア|高齢者|お年寄り)))', 'senior'),
+                (r'((?:for|向け|対象)[\s:]*((?:unisex|ユニセックス|男女兼用)))', 'unisex'),
+                # Direct mentions without prefix
+                (r'(キッズ|子供用|子ども用)', 'children'),
+                (r'(ベビー用|赤ちゃん用|乳児用)', 'baby'),
+                (r'(メンズ|男性用|紳士用)', 'men'),
+                (r'(レディース|女性用|婦人用)', 'women'),
+                (r'(シニア|高齢者用)', 'senior'),
+            ]
+            
+            found_users = []
+            evidence_list = []
+            
+            for pattern, user_type in target_patterns:
+                target_match = re.search(pattern, text, re.IGNORECASE)
+                if target_match and user_type not in found_users:
+                    found_users.append(user_type)
+                    evidence_list.append(target_match.group(0).strip())
+            
+            if found_users:
+                attributes["target_user"] = {
+                    "value": found_users, 
+                    "evidence": " ".join(evidence_list), 
+                    "confidence": 0.3
+                }
 
         # HS Code heuristic (basic category detection - Japan Post 10-digit format)
-        hscode_patterns = [
-            (r'(laptop|ノートパソコン|ノートPC)', '8471300000', 'Laptop computer'),
-            (r'(earring|イヤリング|ピアス)', '7117900000', 'Earring/jewelry'),
-            (r'(eyeshadow|アイシャドウ)', '3304200000', 'Eyeshadow cosmetic'),
-            (r'(dress|ワンピース|ドレス)', '6204421090', 'Dress for women'),
-            (r'(t-?shirt|Tシャツ)', '6109100099', 'T-shirt cotton'),
-            (r'(pants|パンツ|ズボン)', '6204631890', 'Pants for women synthetic'),
-            (r'(jacket|ジャケット|ブルゾン)', '6201931000', 'Jacket'),
-            (r'(coat|コート)', '6201121090', 'Coat'),
-            (r'(sweater|セーター|ニット)', '6110301090', 'Sweater knitted'),
-            (r'(bag|バッグ|ポーチ)', '4202290090', 'Bag/Pouch'),
-        ]
-        
-        for pattern, code, evidence in hscode_patterns:
-            if re.search(pattern, text, re.IGNORECASE):
-                attributes["hscode"] = {"value": code, "evidence": evidence, "confidence": 0.3}
-                break
+        if "hscode" in fields:
+            hscode_patterns = [
+                (r'(laptop|ノートパソコン|ノートPC)', '8471300000', 'Laptop computer'),
+                (r'(earring|イヤリング|ピアス)', '7117900000', 'Earring/jewelry'),
+                (r'(eyeshadow|アイシャドウ)', '3304200000', 'Eyeshadow cosmetic'),
+                (r'(dress|ワンピース|ドレス)', '6204421090', 'Dress for women'),
+                (r'(t-?shirt|Tシャツ)', '6109100099', 'T-shirt cotton'),
+                (r'(pants|パンツ|ズボン)', '6204631890', 'Pants for women synthetic'),
+                (r'(jacket|ジャケット|ブルゾン)', '6201931000', 'Jacket'),
+                (r'(coat|コート)', '6201121090', 'Coat'),
+                (r'(sweater|セーター|ニット)', '6110301090', 'Sweater knitted'),
+                (r'(bag|バッグ|ポーチ)', '4202290090', 'Bag/Pouch'),
+            ]
+            
+            for pattern, code, evidence in hscode_patterns:
+                if re.search(pattern, text, re.IGNORECASE):
+                    attributes["hscode"] = {"value": code, "evidence": evidence, "confidence": 0.3}
+                    break
 
         return {"attributes": attributes}

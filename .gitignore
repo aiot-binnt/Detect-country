@@ -30,3 +30,6 @@ Thumbs.db
 # Service Account Credentials (NEVER commit!)
 gen-lang-client-0682316968-81bcaa1a8ef9.json
 *-service-account.json
+
+# Cache directory (file-based JSON cache)
+cache/

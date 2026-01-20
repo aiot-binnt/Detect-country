@@ -3,8 +3,7 @@ import time
 import asyncio
 import logging
 import traceback
-from collections import OrderedDict
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
 from functools import wraps
 from logging.handlers import RotatingFileHandler
 
@@ -15,6 +14,7 @@ from prometheus_client import Counter, Histogram, generate_latest, REGISTRY
 
 from utils.validator import validate_countries, UNKNOWN_COUNTRY_CODE
 from utils.gemini_detector import GeminiDetector
+from utils.file_cache import FileBasedCache
 
 # --- Configuration & Logging Setup ---
 load_dotenv()
@@ -42,25 +42,13 @@ logger = setup_logger()
 REQUEST_COUNT = Counter('api_requests_total', 'Total API requests', ['endpoint', 'status'])
 REQUEST_LATENCY = Histogram('api_request_duration_seconds', 'API request latency')
 
-# --- Cache Implementation ---
-class LRUCache:
-    """Simple LRU Cache wrapper."""
-    def __init__(self, max_size: int = 1000):
-        self.cache = OrderedDict()
-        self.max_size = max_size
-
-    def get(self, key: str) -> Any:
-        return self.cache.get(key)
-
-    def set(self, key: str, value: Any):
-        self.cache[key] = value
-        if len(self.cache) > self.max_size:
-            self.cache.popitem(last=False)
+# --- Valid Detection Fields ---
+VALID_DETECTION_FIELDS: Set[str] = {"country", "hscode", "material", "size", "target_user"}
 
 # --- App Initialization ---
 app = Flask(__name__)
 CORS(app)
-result_cache = LRUCache(max_size=1000)
+result_cache = FileBasedCache()
 
 # Initialize Gemini Detector
 try:
@@ -118,9 +106,10 @@ def process_detection_result(cache_key: str, ai_result: Dict, start_time: float,
         "time": int((time.time() - start_time) * 1000)
     }
 
-def _generate_cache_key(title: str, description: str) -> str:
-    """Generate a cache key from title and description."""
-    return f"{title.strip()}||{description.strip()}"
+def _generate_cache_key(title: str, description: str, fields: list = None) -> str:
+    """Generate a cache key from title, description and fields."""
+    fields_key = "|".join(sorted(fields)) if fields else "all"
+    return f"{title.strip()}||{description.strip()}||{fields_key}"
 
 # --- Routes ---
 @app.route('/health', methods=['GET'])
@@ -184,6 +173,54 @@ def detect_product():
     title = data.get("title", "").strip()
     description = data.get("description", "").strip()
     custom_model = data.get("model")
+    detect_fields = data.get("detect_fields")  # Required array of fields to detect
+    
+    # Validate detect_fields parameter - required and must be non-empty array
+    if detect_fields is None:
+        REQUEST_COUNT.labels('detect-product', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": f"Parameter 'detect_fields' is required. Must be a non-empty array with valid values: {sorted(VALID_DETECTION_FIELDS)}"
+            }], 
+            status=400
+        )
+    
+    if not isinstance(detect_fields, list):
+        REQUEST_COUNT.labels('detect-product', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": f"Parameter 'detect_fields' must be an array. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+            }], 
+            status=400
+        )
+    
+    if len(detect_fields) == 0:
+        REQUEST_COUNT.labels('detect-product', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": f"Parameter 'detect_fields' cannot be empty. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+            }], 
+            status=400
+        )
+    
+    # Validate each field value
+    invalid_fields = set(detect_fields) - VALID_DETECTION_FIELDS
+    if invalid_fields:
+        REQUEST_COUNT.labels('detect-product', 'error').inc()
+        return api_response(
+            False, 
+            errors=[{
+                "code": "VALIDATION_ERROR", 
+                "message": f"Invalid detect_fields: {sorted(invalid_fields)}. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+            }], 
+            status=400
+        )
     
     # Validate input - at least one of title or description is required
     if not title and not description:
@@ -209,8 +246,8 @@ def detect_product():
             status=400
         )
     
-    # Generate cache key
-    cache_key = _generate_cache_key(title, description)
+    # Generate cache key (includes detect_fields for separate caching)
+    cache_key = _generate_cache_key(title, description, detect_fields)
     
     # Check Cache
     cached_data = result_cache.get(cache_key)
@@ -223,10 +260,10 @@ def detect_product():
     try:
         detector = GeminiDetector(model_name=custom_model)
         
-        log_msg = f"Processing: title='{title[:30]}...', desc='{description[:30]}...' [Model: {detector.model_name}]"
+        log_msg = f"Processing: title='{title[:30]}...', desc='{description[:30]}...' detect_fields={detect_fields} [Model: {detector.model_name}]"
         logger.info(log_msg)
         
-        ai_result = asyncio.run(detector.detect_product(title=title, description=description))
+        ai_result = asyncio.run(detector.detect_product(title=title, description=description, fields=detect_fields))
         
         # Handle AI errors
         if "error" in ai_result:
@@ -353,7 +390,7 @@ def batch_detect_product():
             status=400
         )
     
-    # Validate each item structure
+    # Validate each item structure including detect_fields
     for idx, item in enumerate(items):
         if not isinstance(item, dict):
             REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
@@ -361,13 +398,14 @@ def batch_detect_product():
                 False, 
                 errors=[{
                     "code": "VALIDATION_ERROR", 
-                    "message": f"Item at index {idx} must be an object with 'title' and/or 'description'"
+                    "message": f"Item at index {idx} must be an object with 'title', 'description', and 'detect_fields'"
                 }], 
                 status=400
             )
         
         title = item.get("title", "").strip() if isinstance(item.get("title"), str) else ""
         desc = item.get("description", "").strip() if isinstance(item.get("description"), str) else ""
+        detect_fields = item.get("detect_fields")
         
         if not title and not desc:
             REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
@@ -376,6 +414,52 @@ def batch_detect_product():
                 errors=[{
                     "code": "VALIDATION_ERROR", 
                     "message": f"Item at index {idx} must have at least 'title' or 'description'"
+                }], 
+                status=400
+            )
+        
+        # Validate detect_fields for each item
+        if detect_fields is None:
+            REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{
+                    "code": "VALIDATION_ERROR", 
+                    "message": f"Item at index {idx}: 'detect_fields' is required. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+                }], 
+                status=400
+            )
+        
+        if not isinstance(detect_fields, list):
+            REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{
+                    "code": "VALIDATION_ERROR", 
+                    "message": f"Item at index {idx}: 'detect_fields' must be an array. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+                }], 
+                status=400
+            )
+        
+        if len(detect_fields) == 0:
+            REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{
+                    "code": "VALIDATION_ERROR", 
+                    "message": f"Item at index {idx}: 'detect_fields' cannot be empty. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
+                }], 
+                status=400
+            )
+        
+        invalid_fields = set(detect_fields) - VALID_DETECTION_FIELDS
+        if invalid_fields:
+            REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{
+                    "code": "VALIDATION_ERROR", 
+                    "message": f"Item at index {idx}: Invalid detect_fields: {sorted(invalid_fields)}. Valid values: {sorted(VALID_DETECTION_FIELDS)}"
                 }], 
                 status=400
             )
@@ -408,24 +492,25 @@ def batch_detect_product():
         for i, item in enumerate(items):
             title = item.get("title", "").strip() if isinstance(item.get("title"), str) else ""
             desc = item.get("description", "").strip() if isinstance(item.get("description"), str) else ""
-            cache_key = _generate_cache_key(title, desc)
+            detect_fields = item.get("detect_fields", [])
+            cache_key = _generate_cache_key(title, desc, detect_fields)
             
             cached = result_cache.get(cache_key)
             if cached:
                 results[i] = {"attributes": cached['attributes'], "cache": True}
             else:
-                tasks.append(detector.detect_product(title=title, description=desc))
-                indices_needing_ai.append((i, cache_key))
+                tasks.append(detector.detect_product(title=title, description=desc, fields=detect_fields))
+                indices_needing_ai.append((i, cache_key, detect_fields))
 
         if tasks:
             logger.info(f"Processing {len(tasks)} items with Vertex AI [Model: {detector.model_name}]")
             ai_outputs = await asyncio.gather(*tasks)
             
-            for (idx, cache_key), output in zip(indices_needing_ai, ai_outputs):
+            for (idx, cache_key, detect_fields), output in zip(indices_needing_ai, ai_outputs):
                 # Check for errors in AI output
                 if "error" in output:
                     results[idx] = {
-                        "attributes": detector._get_default_result()['attributes'],
+                        "attributes": detector._get_default_result(fields=detect_fields)['attributes'],
                         "cache": False,
                         "error": {
                             "code": output.get("error_code"),
@@ -436,15 +521,18 @@ def batch_detect_product():
                     continue
                 
                 # Process successful result
-                attributes = output.get('attributes') or detector._get_default_result()['attributes']
-                raw_countries = attributes.get('country', {}).get('value', [])
-                attributes['country']['value'] = validate_countries(raw_countries)
+                attributes = output.get('attributes') or detector._get_default_result(fields=detect_fields)['attributes']
+                
+                # Validate country if present
+                if 'country' in attributes:
+                    raw_countries = attributes.get('country', {}).get('value', [])
+                    attributes['country']['value'] = validate_countries(raw_countries)
                 
                 # Cache Update
-                conf = attributes.get('country', {}).get('confidence', 0.0)
-                hscode_conf = attributes.get('hscode', {}).get('confidence', 0.0)
+                conf = attributes.get('country', {}).get('confidence', 0.0) if 'country' in attributes else 0.0
+                hscode_conf = attributes.get('hscode', {}).get('confidence', 0.0) if 'hscode' in attributes else 0.0
                 
-                if (any(c != UNKNOWN_COUNTRY_CODE for c in attributes['country']['value']) and conf > 0.5) or hscode_conf > 0.5:
+                if conf > 0.5 or hscode_conf > 0.5:
                     result_cache.set(cache_key, {"attributes": attributes})
 
                 results[idx] = {
