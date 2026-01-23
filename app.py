@@ -341,8 +341,18 @@ def batch_detect_product():
     Request body:
     {
         "items": [
-            {"title": "Product 1", "description": "Description 1"},
-            {"title": "Product 2", "description": "Description 2"}
+            {
+                "id": "product_001",  // optional, string - custom identifier for tracking
+                "title": "Product 1", 
+                "description": "Description 1",
+                "detect_fields": ["country", "material"]  // required
+            },
+            {
+                "id": "product_002",
+                "title": "Product 2", 
+                "description": "Description 2",
+                "detect_fields": ["hscode"]
+            }
         ],
         "model": "gemini-2.0-flash"  // optional
     }
@@ -351,10 +361,21 @@ def batch_detect_product():
     {
         "result": "OK",
         "data": {
-            "results": [...],
+            "results": [
+                {
+                    "id": "product_001",  // only if provided in request
+                    "attributes": {...},
+                    "cache": false
+                },
+                {
+                    "id": "product_002",
+                    "attributes": {...},
+                    "cache": true
+                }
+            ],
             "total": 2,
-            "cache_hits": 0,
-            "ai_calls": 2,
+            "cache_hits": 1,
+            "ai_calls": 1,
             "model": "gemini-2.0-flash-exp",
             "time": 2500
         }
@@ -379,13 +400,15 @@ def batch_detect_product():
             status=400
         )
     
-    if len(items) == 0:
+    # Limit batch size to avoid Gemini API limits
+    MAX_BATCH_SIZE = 15
+    if len(items) > MAX_BATCH_SIZE:
         REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
         return api_response(
             False, 
             errors=[{
                 "code": "VALIDATION_ERROR", 
-                "message": "Items list cannot be empty"
+                "message": f"Batch size exceeds maximum limit. Maximum allowed: {MAX_BATCH_SIZE} items, received: {len(items)} items"
             }], 
             status=400
         )
@@ -464,6 +487,28 @@ def batch_detect_product():
                 status=400
             )
     
+    # Validate for duplicate ids
+    item_ids = [item.get("id") for item in items if item.get("id") is not None]
+    if item_ids:
+        seen_ids = set()
+        duplicate_ids = set()
+        for item_id in item_ids:
+            str_id = str(item_id) if not isinstance(item_id, str) else item_id
+            if str_id in seen_ids:
+                duplicate_ids.add(str_id)
+            seen_ids.add(str_id)
+        
+        if duplicate_ids:
+            REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
+            return api_response(
+                False, 
+                errors=[{
+                    "code": "VALIDATION_ERROR", 
+                    "message": f"Duplicate 'id' values found: {sorted(duplicate_ids)}. Each item must have a unique 'id' or omit the 'id' field."
+                }], 
+                status=400
+            )
+    
     # Reject empty model string
     if custom_model is not None and not custom_model.strip():
         REQUEST_COUNT.labels('batch-detect-product', 'error').inc()
@@ -493,23 +538,46 @@ def batch_detect_product():
             title = item.get("title", "").strip() if isinstance(item.get("title"), str) else ""
             desc = item.get("description", "").strip() if isinstance(item.get("description"), str) else ""
             detect_fields = item.get("detect_fields", [])
+            # Get optional item id (string) for identification
+            item_id = item.get("id")
+            if item_id is not None and not isinstance(item_id, str):
+                item_id = str(item_id)  # Convert to string if not already
             cache_key = _generate_cache_key(title, desc, detect_fields)
             
             cached = result_cache.get(cache_key)
             if cached:
-                results[i] = {"attributes": cached['attributes'], "cache": True}
+                result_entry = {"attributes": cached['attributes'], "cache": True}
+                if item_id is not None:
+                    result_entry["id"] = item_id
+                results[i] = result_entry
             else:
                 tasks.append(detector.detect_product(title=title, description=desc, fields=detect_fields))
-                indices_needing_ai.append((i, cache_key, detect_fields))
+                indices_needing_ai.append((i, cache_key, detect_fields, item_id))
 
         if tasks:
             logger.info(f"Processing {len(tasks)} items with Vertex AI [Model: {detector.model_name}]")
-            ai_outputs = await asyncio.gather(*tasks)
+            ai_outputs = await asyncio.gather(*tasks, return_exceptions=True)
             
-            for (idx, cache_key, detect_fields), output in zip(indices_needing_ai, ai_outputs):
-                # Check for errors in AI output
-                if "error" in output:
-                    results[idx] = {
+            for (idx, cache_key, detect_fields, item_id), output in zip(indices_needing_ai, ai_outputs):
+                # Check if output is an exception (task failed completely)
+                if isinstance(output, Exception):
+                    error_entry = {
+                        "attributes": detector._get_default_result(fields=detect_fields)['attributes'],
+                        "cache": False,
+                        "error": {
+                            "code": "TASK_ERROR",
+                            "message": f"Task failed: {str(output)}"
+                        }
+                    }
+                    if item_id is not None:
+                        error_entry["id"] = item_id
+                    results[idx] = error_entry
+                    logger.warning(f"Task exception for item {idx}: {str(output)}")
+                    continue
+                
+                # Check for errors in AI output (returned error dict)
+                if isinstance(output, dict) and "error" in output:
+                    error_entry = {
                         "attributes": detector._get_default_result(fields=detect_fields)['attributes'],
                         "cache": False,
                         "error": {
@@ -517,6 +585,9 @@ def batch_detect_product():
                             "message": output.get("error")
                         }
                     }
+                    if item_id is not None:
+                        error_entry["id"] = item_id
+                    results[idx] = error_entry
                     logger.warning(f"AI error for item {idx}: {output.get('error')}")
                     continue
                 
@@ -535,10 +606,13 @@ def batch_detect_product():
                 if conf > 0.5 or hscode_conf > 0.5:
                     result_cache.set(cache_key, {"attributes": attributes})
 
-                results[idx] = {
+                result_entry = {
                     "attributes": attributes,
                     "cache": False
                 }
+                if item_id is not None:
+                    result_entry["id"] = item_id
+                results[idx] = result_entry
         
         return results, len(tasks), detector.model_name
 
